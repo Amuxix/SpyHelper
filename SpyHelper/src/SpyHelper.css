@@ -1,0 +1,157 @@
+.spy_helper {
+    background: url("//web.tecnico.ulisboa.pt/samuel.a.martins/spyHelper.png") no-repeat;
+    display: inline-block;
+    height: 26px;
+    width: 26px
+}
+
+.total {
+    font-weight: bold;
+    font-size: 125%;
+}
+
+.sortable > table > tr :nth-child(n+2):not(:empty):not(.not_sortable):hover {
+    background-color: #1C262E;
+    cursor: pointer;
+}
+
+.sortable.msg_date:hover {
+    background-color: #1C262E;
+    cursor: pointer;
+}
+
+.left_table {
+    float: left;
+    width: 400px;
+    text-align: center;
+}
+.right_table {
+    float: right;
+    width: 120px;
+    text-align: center;
+}
+
+.more_details {
+    padding-top: 6px;
+}
+
+.no_top_bottom_padding {
+    padding-top: 0;
+    padding-bottom: 0;
+}
+
+.center_text {
+    text-align: center;
+}
+
+.yellow {
+    color: yellow;
+}
+.green {
+    color: lime;
+}
+.purple {
+    color: #700080;
+}
+.orange {
+    color: orange;
+}
+.blue {
+    color: dodgerblue;
+}
+.red {
+    color: red;
+}
+
+.metal {
+    color: #BD8964;
+}
+.crystal {
+    color: #A1D0FF;
+}
+.deuterium {
+    color: silver;
+}
+
+.spy_helper.probe.default {
+    background-position: 0 0
+}
+.spy_helper.probe.default:hover {
+    background-position: 0 -26px
+}
+.spy_helper.probe.failed {
+    background-position: -26px 0
+}
+.spy_helper.probe.failed:hover {
+    background-position: -26px -26px
+}
+.spy_helper.probe.succes { /*Success is already used*/
+    background-position: -52px 0
+}
+.spy_helper.probe.succes:hover {
+    background-position: -52px -26px
+}
+.spy_helper.probe.more {
+    background-position: -78px 0
+}
+.spy_helper.probe.more:hover {
+    background-position: -78px -26px
+}
+
+.spy_helper.large_cargo.default {
+    background-position: 0 -52px
+}
+.spy_helper.large_cargo.default:hover {
+    background-position: 0 -78px
+}
+.spy_helper.large_cargo.failed {
+    background-position: -26px -52px
+}
+.spy_helper.large_cargo.failed:hover {
+    background-position: -26px -78px
+}
+.spy_helper.large_cargo.succes {
+    background-position: -52px -52px
+}
+.spy_helper.large_cargo.succes:hover {
+    background-position: -52px -78px
+}
+
+.spy_helper.small_cargo.default {
+    background-position: 0 -104px
+}
+.spy_helper.small_cargo.default:hover {
+    background-position: 0 -130px
+}
+.spy_helper.small_cargo.failed {
+    background-position: -26px -104px
+}
+.spy_helper.small_cargo.failed:hover {
+    background-position: -26px -130px
+}
+.spy_helper.small_cargo.succes {
+    background-position: -52px -104px
+}
+.spy_helper.small_cargo.succes:hover {
+    background-position: -52px -130px
+}
+
+.spy_helper.sim.default {
+    background-position: 0 -156px
+}
+.spy_helper.sim.default:hover {
+    background-position: 0 -182px
+}
+
+.spy_helper.greater.default {
+    background-position: -78px -52px
+}
+.spy_helper.greater.default:hover {
+    background-position: -78px -78px
+}
+.spy_helper.lesser.default {
+    background-position: -78px -104px
+}
+.spy_helper.lesser.default:hover {
+    background-position: -78px -130px
+}

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="ScalaProjectSettings">
+    <option name="enableJavaToScalaConversion" value="false" />
+    <option name="includeBlockExpressions" value="true" />
+    <option name="includeLiterals" value="true" />
+    <option name="ivy2IndexingMode" value="Classes" />
+    <option name="outputLimit" value="100" />
+    <option name="projectViewHighlighting" value="true" />
+    <option name="showArgumentsToByNameParams" value="true" />
+    <option name="showImplisitConversions" value="true" />
+    <option name="trailingCommasMode" value="Enabled" />
+  </component>
+</project>

@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "outDir": "./target",
+    "allowJs": false,
+    "target": "es2019",
+    "strictNullChecks": true,
+    "alwaysStrict": true
+  },
+  "include": [
+    "./src/**/*"
+  ],
+  "devDependencies": {
+    "@types/jquery": "^3.3.31"
+  }
+}

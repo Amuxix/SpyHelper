@@ -1,0 +1,9 @@
+{
+  "name": "express-typescript-starter",
+  "version": "0.1.0",
+  "description": "A starting point for Node.js express apps with TypeScript",
+  "author": "Bowden Kelly",
+  "devDependencies": {
+    "@types/jquery": "^3.3.31"
+  }
+}
