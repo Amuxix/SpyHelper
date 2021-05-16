@@ -30,7 +30,7 @@
 import $ from "jquery"
 
 const SCRIPT_NAME = "SpyHelper3"
-const UNIVERSE = (document.getElementsByName('ogame-universe')[0] as HTMLMetaElement).content
+const UNIVERSE = (document.getElementsByName("ogame-universe")[0] as HTMLMetaElement).content
 const SAVE_NAME_PREFIX = `${SCRIPT_NAME}_${UNIVERSE.slice(0, 4)}`
 const DELAY_BETWEEN_DELETES = 150
 //Other Constant
@@ -58,10 +58,20 @@ enum Mission {
   ACS_ATTACK = 2,
   MOON_DESTROY = 9,
 }
+
 enum CelestialBodyType {
   PLANET = 1,
   DEBRIS_FIELD = 2,
   MOON = 3,
+}
+
+function celestialBodyFromID(id: number): CelestialBodyType {
+  switch (id) {
+    case 1: return CelestialBodyType.PLANET
+    case 2: return CelestialBodyType.DEBRIS_FIELD
+    case 3: return CelestialBodyType.MOON
+    default: throw new Error("Invalid ID")
+  }
 }
 
 /********************************************* Collections ************************************************************/
@@ -75,7 +85,8 @@ interface Encoder<A> {
   encode(a: A): Object
 }
 
-interface Codec<A> extends Encoder<A>, Decoder<A> {}
+interface Codec<A> extends Encoder<A>, Decoder<A> {
+}
 
 class PrimitiveCodec<A> implements Codec<A> {
   encode(a: A): Object {
@@ -116,13 +127,13 @@ class ArrayCodec<A> implements Codec<Array<A>> {
       const startingValue: Right<string, Array<A>> = new Right(new Array<A>());
 
       return (jsonObject as Array<string>).reduce((either, string) =>
-        either.flatMap(array =>
-          this.codec.decode(string).map(a => {
-            array.push(a)
-            return array
-          })
-        )
-      , startingValue)
+          either.flatMap(array =>
+            this.codec.decode(string).map(a => {
+              array.push(a)
+              return array
+            }),
+          )
+        , startingValue)
     })
   }
 }
@@ -207,6 +218,19 @@ abstract class Optional<A> {
       return None.instance
     } else {
       return f(this.get)
+    }
+  }
+
+  flatApply<B>(f: (a: A) => B | null | undefined): Optional<B> {
+    return this.flatMap(a => Optional.apply(f(a)))
+  }
+
+  tap(f: (a: A) => any): Optional<A> {
+    if (this.isEmpty) {
+      return None.instance
+    } else {
+      f(this.get)
+      return this
     }
   }
 
@@ -304,6 +328,14 @@ abstract class Optional<A> {
     }
   }
 
+  toPromise(failureReason: string): Promise<A> {
+    if (this.isEmpty) {
+      return Promise.reject<A>(failureReason)
+    } else {
+      return Promise.resolve(this.get)
+    }
+  }
+
   static when<A>(p: Boolean, a: () => A): Optional<A> {
     if (p) {
       return new Some(a())
@@ -326,6 +358,7 @@ abstract class Optional<A> {
         return a.fold("null", encoder.encode)
       }
     }
+
     return new OptionalEncoder()
   }
 
@@ -343,6 +376,7 @@ abstract class Optional<A> {
         }
       }
     }
+
     return new OptionalDecoder()
   }
 
@@ -357,6 +391,7 @@ abstract class Optional<A> {
       }
 
     }
+
     return new OptionalCodec()
   }
 
@@ -409,6 +444,7 @@ class None extends Optional<never> {
 
 abstract class Either<A, B> {
   abstract get isRight(): Boolean
+
   abstract get isLeft(): Boolean
 
   private get right(): Right<A, B> {
@@ -521,6 +557,7 @@ class Right<A, B> extends Either<A, B> {
 
 interface HashCodeAndEquals {
   hashCode(): number
+
   equals(o: this): boolean
 }
 
@@ -543,11 +580,11 @@ class HashMap<K, V> {
   private readonly equals: (o1: K, o2: K) => Boolean
   private threshold
 
-  constructor(
-    hashCode: (k: K) => number = (k: K) => (k as unknown as HashCodeAndEquals).hashCode(),
-    equals: (o1: K, o2: K) => Boolean = (o1: K, o2: K) => (o1 as unknown as HashCodeAndEquals).equals(o2 as unknown as HashCodeAndEquals),
+  private constructor(
+    hashCode: (k: K) => number,
+    equals: (o1: K, o2: K) => Boolean,
     maxSize: number = 16,
-    fill: number = 0.75
+    fill: number = 0.75,
   ) {
     this.hashCode = hashCode
     this.equals = equals
@@ -555,6 +592,20 @@ class HashMap<K, V> {
     this.fill = fill;
     this.buckets = new Array(maxSize);
     this.threshold = this.maxSize * this.fill
+  }
+
+  static apply<KH extends HashCodeAndEquals, V>() {
+    return new HashMap<KH, V>(
+      (k: KH) => k.hashCode(),
+      (o1: KH, o2: KH) => o1.equals(o2),
+    )
+  }
+
+  static applyWithHashCodeAndEquals<K, V>(
+    hashCode: (k: K) => number,
+    equals: (o1: K, o2: K) => Boolean,
+  ) {
+    return new HashMap<K, V>(hashCode, equals)
   }
 
   private hash(key: K): number {
@@ -574,6 +625,7 @@ class HashMap<K, V> {
         bucket.push(entry)
         return 1
       }
+
       this.size += Optional.apply(bucket.find(e => this.equals(entry.key, e.key)))
         .fold<number>(pushEntry(), e => {
           e.value = entry.value
@@ -609,7 +661,7 @@ class HashMap<K, V> {
           entry => {
             entry.value = value
             return 0
-          }
+          },
         )
       this.size += increase
     }
@@ -621,7 +673,7 @@ class HashMap<K, V> {
   get(key: K): Optional<V> {
     const bucketID = this.hash(key) % this.maxSize
     return Optional.apply(this.buckets[bucketID])
-      .flatMap(bucket => Optional.apply(bucket.find(entry => this.equals(key, entry.key))))
+      .flatApply(bucket => bucket.find(entry => this.equals(key, entry.key)))
       .map(entry => entry.value)
   }
 
@@ -648,11 +700,7 @@ class HashMap<K, V> {
   }
 
   fold<B>(zero: B, op: (acc: B, key: K, value: V) => B) {
-    let acc = zero;
-    this.entries.forEach(entry => {
-      acc = op(acc, entry.key, entry.value);
-    });
-    return acc;
+    return this.entries.reduce<B>((acc: B, entry: Entry<K, V>) => op(acc, entry.key, entry.value), zero)
   }
 
   getOrElse(key: K, defaultValue: V) {
@@ -682,6 +730,7 @@ class HashMap<K, V> {
 
 class List<A> {
   readonly values: Array<A>
+
   constructor(values: Array<A> = new Array<A>()) {
     this.values = values;
   }
@@ -697,7 +746,7 @@ class List<A> {
   find(p: (a: A) => boolean): Optional<A> {
     return Optional.apply(this.values.find(p))
   }
-  
+
   map<B>(f: (a: A) => B): List<B> {
     return new List<B>(this.values.map(f))
   }
@@ -726,7 +775,7 @@ function daysSince(date: Date) {
 
 function html(literals, ...vars) {
   let raw = literals.raw,
-    result = '',
+    result = "",
     i = 1,
     len = arguments.length,
     str,
@@ -734,7 +783,7 @@ function html(literals, ...vars) {
 
   while (i < len) {
     str = raw[i - 1]
-    variable = vars[i -1]
+    variable = vars[i - 1]
     result += str + variable
     i++
   }
@@ -1143,7 +1192,7 @@ const NO_CLASS = new Class("No class selected", 1, "")
 
 function parseTextNumber(string): Optional<number> {
   return Optional.apply(/\D*((\d+\.?)+)/g.exec(string))
-    .flatMap(regex => Optional.parseInt(regex[1].replace(/[^0-9]+/g, '')))
+    .flatMap(regex => Optional.parseInt(regex[1].replace(/[^0-9]+/g, "")))
 }
 
 class UniverseProperties {
@@ -1161,15 +1210,16 @@ class UniverseProperties {
 
   static get(): Promise<UniverseProperties> {
     const link = `https://${UNIVERSE}/api/serverData.xml`
-    let universeProperties: UniverseProperties
-    return Promise.resolve($.get(link, result => {
-      universeProperties = new UniverseProperties(
-        parseFloat($(result).find('speed').get(0).textContent),
-        parseFloat($(result).find('speedFleet').get(0).textContent),
-        parseFloat($(result).find('debrisFactor').get(0).textContent),
-        parseFloat($(result).find('debrisFactorDef').get(0).textContent),
+    return new Promise<UniverseProperties>(resolve =>
+      $.get(link, result =>
+        resolve(new UniverseProperties(
+          parseFloat($(result).find("speed").get(0).textContent),
+          parseFloat($(result).find("speedFleet").get(0).textContent),
+          parseFloat($(result).find("debrisFactor").get(0).textContent),
+          parseFloat($(result).find("debrisFactorDef").get(0).textContent),
+        ))
       )
-    })).then(_ => universeProperties)
+    )
   }
 }
 
@@ -1214,11 +1264,6 @@ class Coordinates implements HashCodeAndEquals {
     return hash;
   }
 
-  /*static fromString(string) {
-      const match = /(\d):(\d+):(\d+):(\d)/g.exec(string)
-      return new Coordinates(parseInt(match[1]), parseInt(match[2]), parseInt(match[3]), parseInt(match[4]))
-  }*/
-
   /**
    * Extracts coordinates from text in the format galaxy:system:planet
    * @param text text with the coordinates
@@ -1232,26 +1277,8 @@ class Coordinates implements HashCodeAndEquals {
       })
     //Using string split is faster than using regex, regex is about 35% slower
     /*return Optional.apply(/(?<galaxy>\d):(?<system>\d+):(?<position>\d+)/g.exec(text))
-      .flatMap(match => Optional.apply(match.groups))
+      .flatApply(match => match.groups)
       .map(matchGroups => new Coordinates(Optional.parseInt(matchGroups.galaxy).get, Optional.parseInt(matchGroups.system).get, Optional.parseInt(matchGroups.position).get))*/
-  }
-
-  /**
-   * @param report
-   * @returns {Coordinates}
-   */
-  static fromReport(report): Optional<Coordinates> {
-    let attackLink
-    let match
-    try {
-      attackLink = $(report).find('.icon_attack').get(0).parentNode.href
-      match = /galaxy=(\d+)&system=(\d+)&position=(\d+)&type=(\d+)/g.exec(attackLink)
-      return new Some(new Coordinates(Optional.parseInt(match[1]).get, Optional.parseInt(match[2]).get, Optional.parseInt(match[3]).get))
-    } catch (e) {
-      //We are probably in a expedition or event report thingy.
-      attackLink = $(report).find('.msg_title.blue_txt').text()
-      return Coordinates.fromText(attackLink)
-    }
   }
 
   equals(other: Coordinates) {
@@ -1279,7 +1306,72 @@ class Coordinates implements HashCodeAndEquals {
         })
       }
     }
+
     return new CoordinatesCodec()
+  }
+}
+
+class CoordinatesWithType extends Coordinates {
+  readonly bodyType: CelestialBodyType
+
+  constructor(galaxy: number, system: number, position: number, celestialType: CelestialBodyType) {
+    super(galaxy, system, position)
+    this.bodyType = celestialType
+  }
+
+  static fromTitle(title: JQuery): Optional<CoordinatesWithType> {
+    const anchor = title.find("a")
+    return Optional.apply((title.find("a").get(0) as HTMLAnchorElement).textContent)
+      .flatApply(text => /(?<galaxy>\d+):(?<system>\d+):(?<position>\d+)/g.exec(text))
+      .flatMap(match => {
+        const groups = match.groups as {
+          galaxy: string,
+          system: string,
+          position: string,
+        }
+
+        let celestialBodyType = CelestialBodyType.PLANET
+        if (anchor.find("figure").get(0).classList.contains("moon")) {
+          celestialBodyType = CelestialBodyType.MOON
+        }
+
+        return Optional.parseInt(groups.galaxy).flatMap(galaxy =>
+          Optional.parseInt(groups.system).flatMap(system =>
+            Optional.parseInt(groups.position).map(position =>
+              new CoordinatesWithType(galaxy, system, position, celestialBodyType)
+            )
+          )
+        )
+      })
+  }
+
+  static fromIcon(icon: JQuery): Optional<CoordinatesWithType> {
+    return Optional.apply(icon.get(0).parentNode)
+      .map(node => (node as HTMLAnchorElement).href)
+      .flatApply(href => /galaxy=(?<galaxy>\d+)&system=(?<system>\d+)&position=(?<position>\d+)&type=(?<type>\d+)/g.exec(href))
+      .flatMap(match => {
+        const groups = match.groups as {
+          galaxy: string,
+          system: string,
+          position: string,
+          type: string
+        }
+
+        return Optional.parseInt(groups.galaxy).flatMap(galaxy =>
+          Optional.parseInt(groups.system).flatMap(system =>
+            Optional.parseInt(groups.position).flatMap(position =>
+              Optional.parseInt(groups.type).map(celestialBodyFromID).map(type =>
+                new CoordinatesWithType(galaxy, system, position, type)
+              )
+            )
+          )
+        )
+      })
+  }
+
+  static fromReport(report: JQuery): Optional<CoordinatesWithType> {
+    return CoordinatesWithType.fromIcon(report.find(".icon_attack"))
+      .orElse(CoordinatesWithType.fromTitle(report.find(".msg_title.blue_txt")))
   }
 }
 
@@ -1369,6 +1461,7 @@ class Resources extends Debris {
         })
       }
     }
+
     return new ResourcesCodec()
   }
 }
@@ -1404,6 +1497,7 @@ class ResourcesWithEnergy extends Resources {
         })
       }
     }
+
     return new ResourcesWithEnergyCodec()
   }
 }
@@ -1437,18 +1531,18 @@ abstract class SectionWithEntities<A extends Entity> extends Section {
     date: Date,
     sectionID: string,
     fromName: (name: string) => Optional<E>,
-    section: new (all: HashMap<E, number>, date: Date) => Section
+    section: new (all: HashMap<E, number>, date: Date) => Section,
   ): Optional<Section> {
     const detailAtId = $(report.find(`[data-type="${sectionID}"]`))
-    return Optional.when($(detailAtId).find('.detail_list_fail').length === 0, () => {
-      const all = detailAtId.find('.detail_list_el').toArray().reduce((acc, element) => {
-        const name = $(element).find('.detail_list_txt').get(0).innerHTML
+    return Optional.when($(detailAtId).find(".detail_list_fail").length === 0, () => {
+      const all = detailAtId.find(".detail_list_el").toArray().reduce((acc, element) => {
+        const name = $(element).find(".detail_list_txt").get(0).innerHTML
         const entity = fromName(name).getOrThrow(`Could not find entity with name ${name}`)
-        const amount = parseTextNumber($(element).find('.fright').get(0).innerHTML)
+        const amount = parseTextNumber($(element).find(".fright").get(0).innerHTML)
           .getOrThrow(`Could not find amount for ${name}`)
         acc.set(entity, amount)
         return acc
-      }, new HashMap<E, number>())
+      }, HashMap.apply<E, number>())
       return new section(all, date)
     })
   }
@@ -1458,7 +1552,7 @@ abstract class SectionWithEntities<A extends Entity> extends Section {
 
   }
 
-  private amount (what: Entity) {
+  private amount(what: Entity) {
     return this.all.getOrElse(what as A, 0)
   }
 
@@ -1472,7 +1566,7 @@ abstract class SectionWithEntities<A extends Entity> extends Section {
 
   protected static innerCodec<A extends Entity, Section extends SectionWithEntities<A>>(
     fromName: (name: string) => Optional<A>,
-    section: new (all: HashMap<A, number>, date: Date) => Section
+    section: new (all: HashMap<A, number>, date: Date) => Section,
   ): Codec<Section> {
     class SectionWithEntitiesCodec implements Codec<Section> {
       encode(a: Section): Object {
@@ -1484,13 +1578,14 @@ abstract class SectionWithEntities<A extends Entity> extends Section {
           date: Codecs.date.encode(a.date),
         })
       }
+
       decode(json: Object): Result<Section> {
         return Codecs.object.decode(json).flatMap(jsonObject => {
           const json = jsonObject as {
             all: Object,
             date: string,
           }
-          const thingMap = new HashMap<A, number>()
+          const thingMap = HashMap.apply<A, number>()
           for (const name in json.all) {
             if (json.all.hasOwnProperty(name)) {
               const amount = json[name]
@@ -1504,6 +1599,7 @@ abstract class SectionWithEntities<A extends Entity> extends Section {
         })
       }
     }
+
     return new SectionWithEntitiesCodec()
   }
 }
@@ -1556,7 +1652,7 @@ class ResourcesSection extends Section {
 
   static fromDetailedReport(details: JQuery, plunderRatio: number, date: Date) {
     const resources = $(details.find(`[data-type="resources"]`).get(0))
-      .find('.resource_list_el')
+      .find(".resource_list_el")
       .toArray()
       .reduce((acc, element, id) => {
         acc[id] = parseTextNumber(element.title).get
@@ -1569,10 +1665,10 @@ class ResourcesSection extends Section {
         resources[0],
         resources[1],
         resources[2],
-        resources[3]
+        resources[3],
       ),
       plunderRatio,
-      date
+      date,
     )
   }
 
@@ -1599,8 +1695,8 @@ class ResourcesSection extends Section {
           }
           return resourcesCodec.decode(json.resources).flatMap(resources =>
             Codecs.date.decode(json.date).map(date =>
-              new ResourcesSection(resources, json.plunderRatio, date)
-            )
+              new ResourcesSection(resources, json.plunderRatio, date),
+            ),
           )
         })
       }
@@ -1634,7 +1730,7 @@ class DebrisSection extends Section {
     const resourceSections = details.find(`[data-type="resources"]`)
     if (resourceSections.length === 2) {
       const resources = $(resourceSections.get(1))
-        .find('.resource_list_el')
+        .find(".resource_list_el")
         .toArray()
         .reduce((acc, element, id) => {
           acc[id] = parseTextNumber(element.title)
@@ -1644,9 +1740,9 @@ class DebrisSection extends Section {
       return new Some(new DebrisSection(
         new Debris(
           resources[0],
-          resources[1]
+          resources[1],
         ),
-        date
+        date,
       ))
     } else {
       return None.instance
@@ -1670,8 +1766,8 @@ class DebrisSection extends Section {
           }
           return debrisCodec.decode(json.debris).flatMap(debris =>
             Codecs.date.decode(json.date).map(date =>
-              new DebrisSection(debris, date)
-            )
+              new DebrisSection(debris, date),
+            ),
           )
         })
       }
@@ -1806,7 +1902,9 @@ class ParsedReport extends Message {
     this.researches = researches;
   }
 
-  static fromDetailedReport(id: number, date: Date, report: JQuery, plunderRatio: number): ParsedReport {
+  static fromDetailedReport(message: Message, report: JQuery, plunderRatio: number): ParsedReport {
+    const id = message.id
+    const date = message.date
     const resources = ResourcesSection.fromDetailedReport(report, plunderRatio, date)
     const existingDebris = DebrisSection.fromDetailedReport(report, date)
     const fleets = Fleets.fromDetailedReport(report, date)
@@ -1816,9 +1914,9 @@ class ParsedReport extends Message {
     return new ParsedReport(id, date, resources, existingDebris, fleets, defences, buildings, researches)
   }
 
-  static get(id: number): Promise<ParsedReport> {
+  /*static get(id: number): Promise<ParsedReport> {
     return Promise.resolve($.get('index.php?page=messages', {ajax: 1, messageId: id}))
-  }
+  }*/
 
   static codec(
     resourcesCodec: Codec<ResourcesSection> = ResourcesSection.codec(),
@@ -1833,6 +1931,7 @@ class ParsedReport extends Message {
     const optionalDefencesCodec: Codec<Optional<Defences>> = Optional.codec(defencesCodec)
     const optionalBuildingsCodec: Codec<Optional<Buildings>> = Optional.codec(buildingsCodec)
     const optionalResearchesCodec: Codec<Optional<Researches>> = Optional.codec(researchesCodec)
+
     class ParsedReportCodec implements Codec<ParsedReport> {
       encode(a: ParsedReport): Object {
         return Codecs.object.encode({
@@ -1867,17 +1966,18 @@ class ParsedReport extends Message {
                   optionalDefencesCodec.decode(json.defences).flatMap(defences =>
                     optionalBuildingsCodec.decode(json.buildings).flatMap(buildings =>
                       optionalResearchesCodec.decode(json.researches).map(researches =>
-                        new ParsedReport(json.id, date, resources, existingDebris, fleets, defences, buildings, researches)
-                      )
-                    )
-                  )
-                )
-              )
-            )
+                        new ParsedReport(json.id, date, resources, existingDebris, fleets, defences, buildings, researches),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
           )
         })
       }
     }
+
     return new ParsedReportCodec()
   }
 }
@@ -1893,7 +1993,7 @@ class Settings extends Storable {
   readonly lastSortKey: string
   readonly lastSortOrder: Direction
 
-  constructor(researches: Optional<Researches> = None.instance, defaultProbes: number = 1, lastSortKey: string = 'date', lastSortOrder: Direction = Direction.Up) {
+  private constructor(researches: Optional<Researches> = None.instance, defaultProbes: number = 1, lastSortKey: string = "date", lastSortOrder: Direction = Direction.Up) {
     super()
     this.researches = researches
     this.defaultProbes = defaultProbes
@@ -1905,7 +2005,7 @@ class Settings extends Storable {
          researches = this.researches,
          defaultProbes = this.defaultProbes,
          lastSortKey = this.lastSortKey,
-         lastSortOrder = this.lastSortOrder
+         lastSortOrder = this.lastSortOrder,
        } = {}): Settings {
     return new Settings(researches, defaultProbes, lastSortKey, lastSortOrder);
   }
@@ -1944,7 +2044,8 @@ class Settings extends Storable {
         .flatMap(Optional.parseInt)
         .getOrElse(0)
     }
-    const researches = new HashMap<Research, number>()
+
+    const researches = HashMap.apply<Research, number>()
     researches.set(ENERGY_TECHNOLOGY, getResearch(ENERGY_TECHNOLOGY))
     researches.set(LASER_TECHNOLOGY, getResearch(LASER_TECHNOLOGY))
     researches.set(ION_TECHNOLOGY, getResearch(ION_TECHNOLOGY))
@@ -1979,14 +2080,15 @@ class Settings extends Storable {
   }
 
   static codec(researchesCodec: Codec<Researches> = Researches.codec): Codec<Settings> {
-    const optionalResearchesCodec =  Optional.codec<Researches>(researchesCodec)
+    const optionalResearchesCodec = Optional.codec<Researches>(researchesCodec)
+
     class SettingsCodec implements Codec<Settings> {
       encode(a: Settings): Object {
         return Codecs.object.encode({
           researches: optionalResearchesCodec.encode(a.researches),
           defaultProbes: a.defaultProbes,
           lastSortKey: a.lastSortKey,
-          lastSortOrder: a.lastSortOrder
+          lastSortOrder: a.lastSortOrder,
         })
       }
 
@@ -2000,11 +2102,12 @@ class Settings extends Storable {
           }
 
           return optionalResearchesCodec.decode(json.researches).map(researches =>
-            new Settings(researches, json.defaultProbes, json.lastSortKey, json.lastSortOrder)
+            new Settings(researches, json.defaultProbes, json.lastSortKey, json.lastSortOrder),
           )
         })
       }
     }
+
     return new SettingsCodec()
   }
 
@@ -2034,22 +2137,23 @@ class Player {
          id = this.id,
          name = this.name,
          planets = this.planets,
-         researches = this.researches
+         researches = this.researches,
        } = {}) {
     return new Player(id, name, planets, researches);
   }
 
   static codec(
-    researchesCodec: Codec<Researches> = Researches.codec
+    researchesCodec: Codec<Researches> = Researches.codec,
   ): Codec<Player> {
-    const optionalResearchesCodec =  Optional.codec<Researches>(researchesCodec)
+    const optionalResearchesCodec = Optional.codec<Researches>(researchesCodec)
+
     class PlayerCodec implements Codec<Player> {
       encode(a: Player): Object {
         return Codecs.object.encode({
           id: a.id,
           name: a.name,
           planets: a.planets,
-          researches: optionalResearchesCodec.encode(a.researches)
+          researches: optionalResearchesCodec.encode(a.researches),
         })
       }
 
@@ -2063,11 +2167,12 @@ class Player {
           }
 
           return optionalResearchesCodec.decode(json.researches).map(researches =>
-            new Player(json.id, json.name, json.planets, researches)
+            new Player(json.id, json.name, json.planets, researches),
           )
         })
       }
     }
+
     return new PlayerCodec()
   }
 }
@@ -2099,7 +2204,7 @@ class Moon extends CelestialBody {
          coordinates = this.coordinates,
          buildings = this.buildings,
          defences = this.defences,
-         size = this.size
+         size = this.size,
        } = {}) {
     return new Moon(id, coordinates, buildings, defences, size);
   }
@@ -2112,6 +2217,7 @@ class Moon extends CelestialBody {
     const optionalNumberCodec = Optional.codec(Codecs.number)
     const optionalBuildingsCodec = Optional.codec(buildingsCodec)
     const optionalDefencesCodec = Optional.codec(defencesCodec)
+
     class MoonCodec implements Codec<Moon> {
       encode(a: Moon): Object {
         return Codecs.object.encode({
@@ -2119,7 +2225,7 @@ class Moon extends CelestialBody {
           coordinates: coordinatesCodec.encode(a.coordinates),
           buildings: optionalBuildingsCodec.encode(a.buildings),
           defences: optionalDefencesCodec.encode(a.defences),
-          size: optionalNumberCodec.encode(a.size)
+          size: optionalNumberCodec.encode(a.size),
         })
       }
 
@@ -2137,14 +2243,15 @@ class Moon extends CelestialBody {
             optionalBuildingsCodec.decode(json.buildings).flatMap(buildings =>
               optionalDefencesCodec.decode(json.defences).flatMap(defences =>
                 optionalNumberCodec.decode(json.size).map(size =>
-                  new Moon(json.id, coordinates, buildings, defences, size)
-                )
-              )
-            )
+                  new Moon(json.id, coordinates, buildings, defences, size),
+                ),
+              ),
+            ),
           )
         })
       }
     }
+
     return new MoonCodec()
   }
 }
@@ -2162,7 +2269,7 @@ class Planet extends CelestialBody {
          coordinates = this.coordinates,
          buildings = this.buildings,
          defences = this.defences,
-         moonId = this.moonId
+         moonId = this.moonId,
        } = {}) {
     return new Planet(id, coordinates, buildings, defences, moonId);
   }
@@ -2175,6 +2282,7 @@ class Planet extends CelestialBody {
     const optionalNumberCodec = Optional.codec(Codecs.number)
     const optionalBuildingsCodec = Optional.codec(buildingsCodec)
     const optionalDefencesCodec = Optional.codec(defencesCodec)
+
     class PlanetCodec implements Codec<Planet> {
       encode(a: Planet): Object {
         return Codecs.object.encode({
@@ -2182,7 +2290,7 @@ class Planet extends CelestialBody {
           coordinates: coordinatesCodec.encode(a.coordinates),
           buildings: optionalBuildingsCodec.encode(a.buildings),
           defences: optionalDefencesCodec.encode(a.defences),
-          moonId: optionalNumberCodec.encode(a.moonId)
+          moonId: optionalNumberCodec.encode(a.moonId),
         })
       }
 
@@ -2200,14 +2308,15 @@ class Planet extends CelestialBody {
             optionalBuildingsCodec.decode(json.buildings).flatMap(buildings =>
               optionalDefencesCodec.decode(json.defences).flatMap(defences =>
                 optionalNumberCodec.decode(json.moonId).map(moonId =>
-                  new Planet(json.id, coordinates, buildings, defences, moonId)
-                )
-              )
-            )
+                  new Planet(json.id, coordinates, buildings, defences, moonId),
+                ),
+              ),
+            ),
           )
         })
       }
     }
+
     return new PlanetCodec()
   }
 }
@@ -2223,12 +2332,12 @@ class Universe extends Storable {
   private readonly planetsById: HashMap<number, Planet>
   private readonly moonsById: HashMap<number, Moon>
 
-  constructor(
+  private constructor(
     playersAPIDate: Optional<Date> = None.instance,
     universeAPIDate: Optional<Date> = None.instance,
-    players: HashMap<string, Player> = new HashMap(stringHashcode, instanceEquals),
-    planets: HashMap<Coordinates, Planet> = new HashMap(),
-    moons: HashMap<Coordinates, Moon> = new HashMap()
+    players: HashMap<string, Player> = HashMap.applyWithHashCodeAndEquals(stringHashcode, instanceEquals),
+    planets: HashMap<Coordinates, Planet> = HashMap.apply(),
+    moons: HashMap<Coordinates, Moon> = HashMap.apply(),
   ) {
     super();
     this.playersAPIDate = playersAPIDate;
@@ -2240,17 +2349,17 @@ class Universe extends Storable {
     this.playersById = players.values.reduce((acc, player) => {
       acc.set(player.id, player)
       return acc
-    }, new HashMap<number, Player>(identity, instanceEquals))
+    }, HashMap.applyWithHashCodeAndEquals<number, Player>(identity, instanceEquals))
 
     this.planetsById = planets.values.reduce((acc, planet) => {
       acc.set(planet.id, planet)
       return acc
-    }, new HashMap<number, Planet>(identity, instanceEquals))
+    }, HashMap.applyWithHashCodeAndEquals<number, Planet>(identity, instanceEquals))
 
     this.moonsById = moons.values.reduce((acc, moon) => {
       acc.set(moon.id, moon)
       return acc
-    }, new HashMap<number, Moon>(identity, instanceEquals))
+    }, HashMap.applyWithHashCodeAndEquals<number, Moon>(identity, instanceEquals))
   }
 
   addPlayer(player: Player) {
@@ -2283,7 +2392,7 @@ class Universe extends Storable {
       .filter(player => player.planets.every(existingPlanet => existingPlanet !== planet.id)) //Check if player already has this planet
       .map(player => {
         this.addPlayer(player.copy({
-          planets: player.planets.concat(planet.id)
+          planets: player.planets.concat(planet.id),
         }))
       })
   }
@@ -2296,7 +2405,7 @@ class Universe extends Storable {
   updatePlayerWithId(id: number, name: string): Player {
     const player = this.players.get(name)
       .fold(new Player(id, name, [], None.instance), player => player.copy({
-        name: name
+        name: name,
       }))
     this.addPlayer(player)
     return player
@@ -2330,20 +2439,20 @@ class Universe extends Storable {
     const planet = planetByID.fold(
       planetByCoordinates.fold(
         new Planet(id, coordinates, None.instance, None.instance),
-      planetByCoordinates => planetByCoordinates.copy({id: id})
+        planetByCoordinates => planetByCoordinates.copy({id: id}),
       ),
-    planet => {
-      if (moon.nonEmpty) {
-        planet = planet.copy({
-          moonId: moon.map(moon => moon.id)
-        })
-      }
-      if (planetByCoordinates.isEmpty) {
-        //Planet moved
-        planet = this.movePlanet(planet, coordinates)
-      }
-      return planet
-    })
+      planet => {
+        if (moon.nonEmpty) {
+          planet = planet.copy({
+            moonId: moon.map(moon => moon.id),
+          })
+        }
+        if (planetByCoordinates.isEmpty) {
+          //Planet moved
+          planet = this.movePlanet(planet, coordinates)
+        }
+        return planet
+      })
     this.addPlanet(planet)
     return planet
   }
@@ -2351,11 +2460,11 @@ class Universe extends Storable {
   updateMoonWithId(id: number, coordinates: Coordinates, size: Optional<number> = None.instance): Moon {
     const moon = this.findMoonByID(id)
       .fold(new Moon(id, coordinates, None.instance, None.instance, size), moon => {
-      return moon.copy({
-        coordinates: coordinates,
-        size: moon.size.orElse(size)
+        return moon.copy({
+          coordinates: coordinates,
+          size: moon.size.orElse(size),
+        })
       })
-    })
     this.addMoon(moon)
     return moon
   }
@@ -2366,7 +2475,7 @@ class Universe extends Storable {
         const id = Optional.parseInt(moon.id).get
         const size = Optional.apply($(moon).attr("size")).map(parseInt)
         return this.updateMoonWithId(id, coordinates, size)
-    })
+      })
   }
 
   private updatePlanetsAndMoons(): Promise<null> {
@@ -2424,7 +2533,7 @@ class Universe extends Storable {
     //const updatePlanetsAndMoons = Promise.resolve(1)
     return Promise.all([updatePlayers, updatePlanetsAndMoons]).then(() => this.saveToLocalStorage())
   }
-  
+
   updatePlanetAt(coordinates: Coordinates, buildings: Optional<Buildings>, defences: Optional<Defences>): Optional<Planet> {
     return this.planets.get(coordinates).map(planet => {
       const updatedBuildings = Section.getMostUpToDate(planet.buildings, buildings)
@@ -2455,7 +2564,7 @@ class Universe extends Storable {
     return this.players.get(name).map(player => {
       const updatedResearches = Section.getMostUpToDate(player.researches, researches)
       const updatedPlayer = player.copy({
-        researches: updatedResearches
+        researches: updatedResearches,
       })
       this.addPlayer(updatedPlayer)
       return updatedPlayer
@@ -2478,12 +2587,13 @@ class Universe extends Storable {
 
       decode(json: Object): Result<HashMap<string, Player>> {
         return this.playerArrayCodec.decode(json).map(players => {
-          const map = new HashMap<string, Player>(stringHashcode, instanceEquals)
+          const map = HashMap.applyWithHashCodeAndEquals<string, Player>(stringHashcode, instanceEquals)
           players.forEach(player => map.set(player.name, player))
           return map
         })
       }
     }
+
     return new PlayersCodec()
   }
 
@@ -2499,12 +2609,13 @@ class Universe extends Storable {
 
       decode(json: Object): Result<HashMap<Coordinates, Planet>> {
         return this.planetsArrayCodec.decode(json).map(planets => {
-          const map = new HashMap<Coordinates, Planet>()
+          const map = HashMap.apply<Coordinates, Planet>()
           planets.forEach(planet => map.set(planet.coordinates, planet))
           return map
         })
       }
     }
+
     return new PlanetsCodec()
   }
 
@@ -2520,12 +2631,13 @@ class Universe extends Storable {
 
       decode(json: Object): Result<HashMap<Coordinates, Moon>> {
         return this.moonsArrayCodec.decode(json).map(moons => {
-          const map = new HashMap<Coordinates, Moon>()
+          const map = HashMap.apply<Coordinates, Moon>()
           moons.forEach(moon => map.set(moon.coordinates, moon))
           return map
         })
       }
     }
+
     return new MoonsCodec()
   }
 
@@ -2535,6 +2647,7 @@ class Universe extends Storable {
     moonsCodec: Codec<HashMap<Coordinates, Moon>> = Universe.moonsCodec(),
   ): Codec<Universe> {
     const optionalDateCodec = Optional.codec<Date>(Codecs.date)
+
     class UniverseCodec implements Codec<Universe> {
       encode(a: Universe): Object {
         return Codecs.object.encode({
@@ -2561,15 +2674,16 @@ class Universe extends Storable {
               playerCodec.decode(json.players).flatMap(players =>
                 planetsCodec.decode(json.planets).flatMap(planets =>
                   moonsCodec.decode(json.moons).map(moons =>
-                    new Universe(playersAPIDate, universeAPIDate, players, planets, moons)
-                  )
-                )
-              )
-            )
+                    new Universe(playersAPIDate, universeAPIDate, players, planets, moons),
+                  ),
+                ),
+              ),
+            ),
           )
         })
       }
     }
+
     return new UniverseCodec()
   }
 
@@ -2585,33 +2699,30 @@ class Universe extends Storable {
 class ParsedReportsRepository extends Storable {
   readonly allReports: HashMap<number, ParsedReport>
 
-  constructor(allDetails: HashMap<number, ParsedReport> = new HashMap(identity, instanceEquals)) {
+  private constructor(allDetails: HashMap<number, ParsedReport> = HashMap.applyWithHashCodeAndEquals(identity, instanceEquals)) {
     super();
     this.allReports = allDetails
   }
 
-  add(id: number, report: ParsedReport): void {
-    this.allReports.set(id, report)
+  add(report: ParsedReport): void {
+    this.allReports.set(report.id, report)
     this.saveToLocalStorage()
   }
 
-  get(id: number, report: string, reportDate: number): Promise<ParsedReport> {
-    function getReport(id: number, report: string, reportDate: number): Promise<ParsedReport> {
-      console.log(`Getting details for ${id}`)
+  async get(message: Message): Promise<ParsedReport> {
+    function getReport(message: Message): Promise<ParsedReport> {
+      //console.log(`Getting details for ${message.id}`)
       return new Promise<ParsedReport>(resolve => {
-        $.get('index.php?page=messages', {ajax: 1, messageId: id}, (detailedReport) => {
+        $.get("index.php?page=messages", {ajax: 1, messageId: message.id}, (detailedReport) => {
           const plunderRatio = 0.5
-          const parsedReport = ParsedReport.fromDetailedReport(id, new Date(reportDate), $(detailedReport), plunderRatio)
-          spyHelper.parsedReportsRepository.add(id, parsedReport);
+          const parsedReport = ParsedReport.fromDetailedReport(message, $(detailedReport), plunderRatio)
+          spyHelper.parsedReportsRepository.add(parsedReport);
           resolve(parsedReport)
         })
       })
     }
 
-    return this.allReports.get(id).fold(getReport(id, report, reportDate), parsedReport => {
-      console.log(`Using details from repository for ${id}`)
-      return Promise.resolve(parsedReport);
-    })
+    return this.allReports.getOrElse(message.id, await getReport(message))
   }
 
   remove(id) {
@@ -2623,39 +2734,27 @@ class ParsedReportsRepository extends Storable {
     return `${SAVE_NAME_PREFIX}_details`;
   }
 
-  private static allReportsCodec(parsedReportCodec: Codec<ParsedReport> = ParsedReport.codec()): Codec<HashMap<number, ParsedReport>> {
-    class AllReportsCodec implements Codec<HashMap<number, ParsedReport>> {
+  static codec(
+    parsedReportCodec: Codec<ParsedReport> = ParsedReport.codec(),
+  ): Codec<ParsedReportsRepository> {
+    class ParsedReportsRepositoryCodec implements Codec<ParsedReportsRepository> {
       get parsedReportArrayCodec(): Codec<Array<ParsedReport>> {
         return new ArrayCodec(parsedReportCodec)
       }
 
-      encode(a: HashMap<number, ParsedReport>): Object {
-        return this.parsedReportArrayCodec.encode(a.values)
-      }
-
-      decode(json: Object): Result<HashMap<number, ParsedReport>> {
-        return this.parsedReportArrayCodec.decode(json).map(reports => {
-          const map = new HashMap<number, ParsedReport>()
-          reports.forEach(report => map.set(report.id, report))
-          return map
-        })
-      }
-    }
-    return new AllReportsCodec()
-  }
-
-  static codec(
-    allReportsCodec: Codec<HashMap<number, ParsedReport>> = ParsedReportsRepository.allReportsCodec()
-  ): Codec<ParsedReportsRepository> {
-    class ParsedReportsRepositoryCodec implements Codec<ParsedReportsRepository> {
       encode(a: ParsedReportsRepository): Object {
-        return allReportsCodec.encode(a.allReports)
+        return this.parsedReportArrayCodec.encode(a.allReports.values)
       }
 
       decode(json: Object): Result<ParsedReportsRepository> {
-        return allReportsCodec.decode(json).map(allReports => new ParsedReportsRepository(allReports))
+        return this.parsedReportArrayCodec.decode(json).map(reports => {
+          const map = HashMap.applyWithHashCodeAndEquals<number, ParsedReport>(identity, instanceEquals)
+          reports.forEach(report => map.set(report.id, report))
+          return map
+        }).map(allReports => new ParsedReportsRepository(allReports))
       }
     }
+
     return new ParsedReportsRepositoryCodec()
   }
 
@@ -2694,7 +2793,7 @@ class GalaxyParser {
           const moonID = Optional.apply($(row$.find(".moon").get(0)).attr("data-moon-id")).flatMap(Optional.parseInt)
           return planetID.flatMap(planetID => {
             return coordinates.flatMap(coordinates => {
-              const moon =  moonID.map(moonID => this.universe.updateMoonWithId(moonID, coordinates))
+              const moon = moonID.map(moonID => this.universe.updateMoonWithId(moonID, coordinates))
               const planet = this.universe.updatePlanetWithId(planetID, coordinates, moon)
 
               const playerID = Optional.apply(row$.find(".playername").find("[data-playerid]").attr("data-playerid"))
@@ -2708,7 +2807,8 @@ class GalaxyParser {
               })
             })
           })
-            .fold(Promise.resolve(), p => p.then(() => {}))
+            .fold(Promise.resolve(), p => p.then(() => {
+            }))
         })
         .fold(Promise.resolve(), identity)
     })
@@ -2721,7 +2821,7 @@ class GalaxyParser {
         const mutationObserver = new MutationObserver(() => {
           return this.parse()
         })
-        mutationObserver.observe(target, {childList : true})
+        mutationObserver.observe(target, {childList: true})
       })
       .getOrThrow("Failed to find galaxy element to target with mutation observer.")
   }
@@ -2733,11 +2833,12 @@ class MessagesParser {
   private readonly universe: Universe
   private readonly parsedReportsRepository: ParsedReportsRepository
 
-  private readonly config = {childList : true}
-  private outerTarget: Optional<Element> = Optional.apply(document.querySelector('#ui-id-2'))
-  //private innerTarget: Optional<Element> = this.outerTarget.flatMap(outerTarget => Optional.apply(outerTarget.querySelector('.ui-tabs-panel.ui-widget-content.ui-corner-bottom')))
+  private readonly config = {childList: true}
+  private outerTarget: Optional<Element> = Optional.apply(document.querySelector("#ui-id-2"))
+
+  //private innerTarget: Optional<Element> = this.outerTarget.flatApply(outerTarget => outerTarget.querySelector('.ui-tabs-panel.ui-widget-content.ui-corner-bottom'))
   private get innerTarget(): Optional<Element> {
-    return this.outerTarget.flatMap(outerTarget => Optional.apply(outerTarget.querySelector('.ui-tabs-panel.ui-widget-content.ui-corner-bottom')))
+    return this.outerTarget.flatApply(outerTarget => outerTarget.querySelector(".ui-tabs-panel.ui-widget-content.ui-corner-bottom"))
   }
 
   innerObserver = new MutationObserver(() => {
@@ -2761,9 +2862,9 @@ class MessagesParser {
   }
 
   private extractPageNumber(element: JQuery<Element>): Optional<number> {
-    return Optional.apply(element.find('.curPage'))
+    return Optional.apply(element.find(".curPage"))
       .map(page => page.get(0).innerHTML)
-      .flatMap(text => Optional.apply(/\d+\/(\d+)/g.exec(text)))
+      .flatApply(text => /\d+\/(\d+)/g.exec(text))
       .flatMap(matches => Optional.parseInt(matches[1]))
   }
 
@@ -2773,17 +2874,17 @@ class MessagesParser {
       tabid: 20, //Espionage
       action: 107,
       pagination: pageNumber,
-      ajax: 1
+      ajax: 1,
     }
 
     return Promise.resolve($.post("?page=messages", body, callback))
   }
 
-  private static getParsedDate(msgID: number, report: Element): Optional<Date> {
-    const date = $(report).find('.msg_date');
-    date.addClass('sortable');
+  private static getParsedDate(msgID: number, report: JQuery): Optional<Date> {
+    const date = report.find(".msg_date");
+    date.addClass("sortable");
     const dateElement = date.get(0);
-    SpyHelper.addIdAndSortKey(dateElement, msgID, 'date');
+    SpyHelper.addIdAndSortKey(dateElement, msgID, "date");
     // day 1
     // month 2
     // year 3
@@ -2792,51 +2893,59 @@ class MessagesParser {
     // sec 6
     return Optional.apply(/(\d+)\.(\d+)\.(\d+) (\d+):(\d+):(\d+)/g.exec(dateElement.innerHTML))
       .map(m => {
-        $(report).find('.msg_date').on('click', SpyHelper.sortMessages)
+        report.find(".msg_date").on("click", SpyHelper.sortMessages)
         return new Date(
           Optional.parseInt(m[3]).get,
           Optional.parseInt(m[2]).get - 1,
           Optional.parseInt(m[1]).get,
           Optional.parseInt(m[4]).get,
           Optional.parseInt(m[5]).get,
-          Optional.parseInt(m[6]).get
+          Optional.parseInt(m[6]).get,
         )
       })
   }
 
-  private static async handleMessage(msgID: number, report: Element): Promise<void> {
-    const coordinates = await Coordinates.fromReport(report).toRight("Failed to get coordinates from report!").toPromise
-    const iconDiv = $(report).find(".msg_actions").first()
-    const reportDate = await MessagesParser.getParsedDate(msgID, report).toRight(`Could not get date for report with ID: ${msgID}`).toPromise
+  private static async handleMessage(msgID: number, report: JQuery): Promise<void> {
+    const coordinates = await CoordinatesWithType.fromReport(report)
+      .toPromise(`Failed to get coordinates from report with ID: ${msgID}!`)
+    const sender = $(report).find(".msg_sender").get(0).innerHTML
 
-    if ($(report).find('.msg_sender').get(0).innerHTML !== "Fleet Command" || coordinates.position > 15) {
-      if (coordinates.position <= 15) {
-        iconDiv.append(SpyHelper.createSpyIcon(coordinates, 1));
-      }
-      spyHelper.messages.push(new Message(msgID, reportDate));
-    }
-    return Promise.resolve()
+    if (sender !== "Fleet Command" || coordinates.position > 15) return Promise.resolve()
+
+    const reportDate = await MessagesParser.getParsedDate(msgID, report)
+      .toPromise(`Failed to get date from report with ID: ${msgID}`)
+    const message = new Message(msgID, reportDate)
+
+    const spyIcon = SpyHelper.createSpyIcon(coordinates)
+    const iconDiv = $(report).find(".msg_actions").first()
+    iconDiv.append(spyIcon);
+
+    spyHelper.messages.push(message)
+    const parsedReport = await spyHelper.parsedReportsRepository.get(message)
   }
 
   private static handleAllMessages(): Promise<void> {
-    const requests = $(".msg:visible").toArray().reduce((acc, report) => {
-      const msgId: number = $(report).data("msg-id");
+    const reports = $(".msg:visible").toArray().reduce((acc, report) => {
+      const jReport: JQuery = $(report)
+      const msgId: number = jReport.data("msg-id");
       //console.log(msgId, report)
-      acc.push(MessagesParser.handleMessage(msgId, report));
+      acc.push(MessagesParser.handleMessage(msgId, jReport));
       return acc;
     }, new Array<Promise<void>>())
 
-    return Promise.all(requests).then(_ => {})
+    return Promise.all(reports).then(_ => {
+    })
   }
 
   run(): Promise<void> {
     return this.innerTarget
-      .map(target => $(target).find('.tab_inner'))
+      .map(target => $(target).find(".tab_inner"))
       .flatMap(innerTab => {
         function appendMessages(c: Element) {
-          const content = $(c).find('.msg');
+          const content = $(c).find(".msg");
           innerTab.append(content); //Append all messages from this page to the message page.
         }
+
         return this.extractPageNumber(innerTab).map(numberOfPages => {
           let requests = new Array<Promise<void>>()
           for (let i = 2; i <= numberOfPages; i++) { //Skip page 1 as we already have it.
@@ -2860,30 +2969,32 @@ class SpyHelper {
   settings: Settings
   universe: Universe
   parsedReportsRepository: ParsedReportsRepository
-  messages: Array<Message> = []
+  messages: Array<Message> = new Array<Message>()
 
-  private constructor(universeProperties: UniverseProperties, settings: Settings, universe: Universe) {
+  private constructor(universeProperties: UniverseProperties, settings: Settings, universe: Universe, parsedReportsRepository: ParsedReportsRepository) {
     this.universeProperties = universeProperties;
     this.settings = settings;
     this.universe = universe;
+    this.parsedReportsRepository = parsedReportsRepository
   }
 
   static addCSS(): void {
-    const link = html`<link rel="stylesheet" type="text/css" href="https://web.tecnico.ulisboa.pt/samuel.a.martins/${SCRIPT_NAME.slice(0, -1)}.css">`
+    const link = html`<link rel="stylesheet" type="text/css" href="http://localhost/${SCRIPT_NAME.slice(0, -1)}.css">`
+    //const link = html`<link rel="stylesheet" type="text/css" href="https://web.tecnico.ulisboa.pt/samuel.a.martins/${SCRIPT_NAME.slice(0, -1)}.css">`
     document.head.appendChild(link)
   }
 
-  static get load(): Promise<SpyHelper> {
+  static async load(): Promise<SpyHelper> {
 
-    const spyHelperPromise = UniverseProperties.get().then(universeProperties => {
-      SpyHelper.addCSS()
-      const settings = Settings.loadFromLocalStorage()
-      const universe = Universe.loadFromLocalStorage()
-      console.log(`Successfully loaded ${SCRIPT_NAME}`)
-      return new SpyHelper(universeProperties, settings, universe)
-    })
-
-    return spyHelperPromise.then(spyHelper => spyHelper.universe.updateEverything().then(() => spyHelper))
+    const universeProperties = await UniverseProperties.get()
+    SpyHelper.addCSS()
+    const settings = Settings.loadFromLocalStorage()
+    const universe = Universe.loadFromLocalStorage()
+    const parsedReportsRepository = ParsedReportsRepository.loadFromLocalStorage()
+    console.log(`Successfully loaded ${SCRIPT_NAME}`)
+    const spyHelper = new SpyHelper(universeProperties, settings, universe, parsedReportsRepository)
+    await spyHelper.universe.updateEverything()
+    return spyHelper
   }
 
   run(): Promise<void> {
@@ -2916,7 +3027,7 @@ class SpyHelper {
     coordinates: Coordinates,
     bodyType: CelestialBodyType,
     probesToSend: number,
-    target: Element
+    target: Element,
   ): Promise<void> {
     const params = {
       mission: mission,
@@ -2926,7 +3037,7 @@ class SpyHelper {
       type: bodyType,
       shipCount: probesToSend,
       // @ts-ignore
-      token: miniFleetToken
+      token: miniFleetToken,
     };
     // @ts-ignore
     return Promise.resolve($.ajax(miniFleetLink, {
@@ -2943,7 +3054,7 @@ class SpyHelper {
         } else {
           target.classList.add("failed")
         }
-      }
+      },
     }))
   }
 
@@ -2954,38 +3065,42 @@ class SpyHelper {
   }
 
   static newIcon(classes: string, href: string, onclick: (event) => boolean) {
-    let icon = SpyHelper.createElementWithClass('a', 'icon_nf_link fleft');
+    const icon = SpyHelper.createElementWithClass("a", "icon_nf_link fleft");
     icon.onclick = onclick;
     // @ts-ignore
     icon.href = href;
-    let span = SpyHelper.createElementWithClass('span', 'spy_helper default ' + classes);
+    const span = SpyHelper.createElementWithClass("span", "spy_helper default " + classes);
     icon.appendChild(span);
     return icon;
   }
 
-  static createSpyIcon(coordinates: Coordinates, celestialBodyType: CelestialBodyType, probesToSend: number = spyHelper.settings.defaultProbes) {
+  static createSpyIcon(coordinates: CoordinatesWithType, probesToSend: number = spyHelper.settings.defaultProbes): HTMLElement {
     let probeIcon = ESPIONAGE_PROBE_ICON
     let href
     let onclick
     if (probesToSend === spyHelper.settings.defaultProbes) {
       href = "javascript:void(0)"
-      onclick = (event) => {
-        SpyHelper.sendProbes(Mission.ESPIONAGE, coordinates, celestialBodyType, probesToSend, event.target)
+      onclick = async (event) => {
+        await SpyHelper.sendProbes(Mission.ESPIONAGE, coordinates, coordinates.bodyType, probesToSend, event.target)
         return false;//Returning false cancels the event(that would open the link).
       }
     } else {
       probeIcon += " more"
-      const targetPartialLink = "ingame&component=fleetdispatch&galaxy=" + coordinates.galaxy +
-        "&system=" + coordinates.system + "&position=" + coordinates.position + "&type=" + celestialBodyType +
-        "&mission=" + Mission.ESPIONAGE + "&am" + ESPIONAGE_PROBE.id + "=" + probesToSend
-      href = location.href.replace('messages', targetPartialLink);
+      /*const targetPartialLink = "ingame&component=fleetdispatch&galaxy=" + coordinates.galaxy +
+        "&system=" + coordinates.system + "&position=" + coordinates.position + "&type=" + coordinates.bodyType +
+        "&mission=" + Mission.ESPIONAGE + "&am" + ESPIONAGE_PROBE.id + "=" + probesToSend*/
+      const targetPartialLink =
+        `ingame&component=fleetdispatch&galaxy=${coordinates.galaxy}&system=${coordinates.system}` +
+        `&position${coordinates.position}&type=${coordinates.bodyType}&mission=${Mission.ESPIONAGE}` +
+        `&am${ESPIONAGE_PROBE.id}=${probesToSend}`
+      href = location.href.replace("messages", targetPartialLink);
     }
     return SpyHelper.newIcon(probeIcon, href, onclick);
   }
 }
 
 let spyHelper: SpyHelper
-$(() => SpyHelper.load.then(s => {
+$(() => SpyHelper.load().then(s => {
   spyHelper = s
   // @ts-ignore
   window.SpyHelper = s
