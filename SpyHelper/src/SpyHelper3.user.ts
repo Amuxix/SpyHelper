@@ -27,7 +27,7 @@
  * Fix pre-select ships
  * Apply the spy helper to the trash.
  */
-import * as $ from "jquery"
+import $ from "jquery"
 
 const SCRIPT_NAME = "SpyHelper3"
 const UNIVERSE = (document.getElementsByName('ogame-universe')[0] as HTMLMetaElement).content
@@ -65,48 +65,72 @@ enum CelestialBodyType {
 }
 
 /********************************************* Collections ************************************************************/
+type Result<A> = Either<string, A>
 
 interface Decoder<A> {
-  decode(json: Object | null): A
+  decode(json: Object): Result<A>
 }
 
 interface Encoder<A> {
-  encode(a: A): Object | null
+  encode(a: A): Object
 }
 
 interface Codec<A> extends Encoder<A>, Decoder<A> {}
 
-function primitiveCodec<A>(): Codec<A> {
-  class PrimitiveCodec implements Codec<A> {
-    encode(a: A): Object | null {
-      return a;
-    }
-
-    decode(json: Object | null): A {
-      if (json === null) {
-        throw new Error("Trying to decode Primitive from null json")
-      } else {
-        return json as A;
-      }
-    }
+class PrimitiveCodec<A> implements Codec<A> {
+  encode(a: A): Object {
+    return a;
   }
-  return new PrimitiveCodec()
+
+  decode(json: Object): Result<A> {
+    return new Right(json as A)
+  }
 }
 
-function dateCodec(): Codec<Date> {
-  class DateCodec implements Codec<Date> {
-    encode(a: Date): Object | null {
-      return a.getTime();
-    }
-
-    decode(json: Object | null): Date {
-      return Optional.apply(json)
-        .flatMap(json => Optional.parseInt(json as string))
-        .map(timestamp => new Date(timestamp))
-        .getOrThrow("Trying to decode Date from null json")
-    }
+class DateCodec implements Codec<Date> {
+  encode(a: Date): Object {
+    return Codecs.number.encode(a.getTime())
   }
-  return new DateCodec()
+
+  decode(json: Object): Result<Date> {
+    return Optional.apply(json)
+      .flatMap(json => Optional.parseInt(json as string))
+      .map(timestamp => new Date(timestamp))
+      .toRight(`Failed to parse date from ${json}`)
+  }
+}
+
+class ArrayCodec<A> implements Codec<Array<A>> {
+  private readonly codec: Codec<A>
+
+  constructor(codec: Codec<A>) {
+    this.codec = codec;
+  }
+
+  encode(a: Array<A>): Object {
+    return Codecs.object.encode(a.map(this.codec.encode))
+  }
+
+  decode(json: Object): Result<Array<A>> {
+    return Codecs.object.decode(json).flatMap(jsonObject => {
+      const startingValue: Right<string, Array<A>> = new Right(new Array<A>());
+
+      return (jsonObject as Array<string>).reduce((either, string) =>
+        either.flatMap(array =>
+          this.codec.decode(string).map(a => {
+            array.push(a)
+            return array
+          })
+        )
+      , startingValue)
+    })
+  }
+}
+
+const Codecs = {
+  number: new PrimitiveCodec<number>(),
+  object: new PrimitiveCodec<Object>(),
+  date: new DateCodec(),
 }
 
 abstract class Optional<A> {
@@ -264,6 +288,22 @@ abstract class Optional<A> {
     }
   }
 
+  toLeft<B>(right: B): Either<A, B> {
+    if (this.isEmpty) {
+      return new Right(right)
+    } else {
+      return new Left(this.get)
+    }
+  }
+
+  toRight<B>(left: B): Either<B, A> {
+    if (this.isEmpty) {
+      return new Left(left)
+    } else {
+      return new Right(this.get)
+    }
+  }
+
   static when<A>(p: Boolean, a: () => A): Optional<A> {
     if (p) {
       return new Some(a())
@@ -276,20 +316,31 @@ abstract class Optional<A> {
     return Optional.when(!p, a)
   }
 
+  /**
+   * This writes None as null and other values uses the given encoder
+   * @param encoder
+   */
   static encoder<A>(encoder: Encoder<A>): Encoder<Optional<A>> {
     class OptionalEncoder implements Encoder<Optional<A>> {
-      encode(a: Optional<A>): Object | null {
-        return a.fold<Object | null>(null, encoder.encode)
+      encode(a: Optional<A>): Object {
+        return a.fold("null", encoder.encode)
       }
     }
     return new OptionalEncoder()
   }
 
+  /**
+   * This decodes nulls to None and other values to Some
+   * @param decoder
+   */
   static decoder<A>(decoder: Decoder<A>): Decoder<Optional<A>> {
     class OptionalDecoder implements Decoder<Optional<A>> {
-      decode(json: Object | null): Optional<A> {
-        return Optional.apply(json)
-          .map(decoder.decode)
+      decode(json: Object): Result<Optional<A>> {
+        if (json === "null") {
+          return new Right<string, Optional<A>>(None.instance)
+        } else {
+          return decoder.decode(json).map(a => new Some(a))
+        }
       }
     }
     return new OptionalDecoder()
@@ -297,11 +348,11 @@ abstract class Optional<A> {
 
   static codec<A>(codec: Codec<A>): Codec<Optional<A>> {
     class OptionalCodec implements Codec<Optional<A>> {
-      encode(a: Optional<A>): Object | null {
+      encode(a: Optional<A>): Object {
         return Optional.encoder(codec).encode(a)
       }
 
-      decode(json: Object | null): Optional<A> {
+      decode(json: Object): Result<Optional<A>> {
         return Optional.decoder(codec).decode(json)
       }
 
@@ -352,7 +403,119 @@ class None extends Optional<never> {
   }
 
   get get(): never {
-    throw new Error("Trying to get value of none!")
+    throw new Error("Trying to get value of None!")
+  }
+}
+
+abstract class Either<A, B> {
+  abstract get isRight(): Boolean
+  abstract get isLeft(): Boolean
+
+  private get right(): Right<A, B> {
+    if (this.isLeft) {
+      throw new Error("Trying to cast Left as Right!")
+    } else {
+      return this as unknown as Right<A, B>
+    }
+  }
+
+  private get left(): Left<A, B> {
+    if (this.isRight) {
+      throw new Error("Trying to cast Right as Left!")
+    } else {
+      return this as unknown as Left<A, B>
+    }
+  }
+
+  get get(): B {
+    if (this.isLeft) {
+      throw this.left.value
+    } else {
+      return this.right.value
+    }
+  }
+
+  getOrElse(def: B): B {
+    if (this.isLeft) {
+      return def
+    } else {
+      return this.right.value
+    }
+  }
+
+  get toOption(): Optional<B> {
+    if (this.isLeft) {
+      return None.instance
+    } else {
+      return new Some<B>(this.right.value)
+    }
+  }
+
+
+  map<C>(f: (a: B) => C): Either<A, C> {
+    if (this.isLeft) {
+      return this as unknown as Either<A, C>
+    } else {
+      return new Right<A, C>(f(this.right.value))
+    }
+  }
+
+  flatMap<C extends A, D>(f: (b: B) => Either<C, D>): Either<C, D> {
+    if (this.isLeft) {
+      return this as unknown as Either<C, D>
+    } else {
+      return f(this.right.value)
+    }
+  }
+
+  fold<C>(f: (a: A) => C, g: (b: B) => C): C {
+    if (this.isLeft) {
+      return f(this.left.value)
+    } else {
+      return g(this.right.value)
+    }
+  }
+
+  get toPromise(): Promise<B> {
+    if (this.isLeft) {
+      return Promise.reject<B>(this.left.value)
+    } else {
+      return Promise.resolve(this.right.value)
+    }
+  }
+}
+
+class Left<A, B> extends Either<A, B> {
+  value: A
+
+  constructor(value: A) {
+    super()
+    this.value = value
+  }
+
+  get isRight(): Boolean {
+    return false
+  }
+
+  get isLeft(): Boolean {
+    return true
+  }
+}
+
+class Right<A, B> extends Either<A, B> {
+  value: B
+
+  constructor(value: B) {
+    super()
+    this.value = value
+  }
+
+  get isRight(): Boolean {
+    return true
+  }
+
+  get isLeft(): Boolean {
+    return false
   }
 }
 
@@ -880,7 +1043,7 @@ class Class {
     this.color = color
   }
 
-  static fromName(className: string) {
+  static fromName(className: string): Optional<Class> {
     switch (className) {
       case GENERAL.name:
         return new Some(GENERAL)
@@ -892,7 +1055,6 @@ class Class {
         return new Some(NO_CLASS)
       default:
         return None.instance
-      //throw `Could not find a Class named ${className}`
     }
   }
 }
@@ -999,28 +1161,33 @@ class UniverseProperties {
 
   static get(): Promise<UniverseProperties> {
     const link = `https://${UNIVERSE}/api/serverData.xml`
+    let universeProperties: UniverseProperties
     return Promise.resolve($.get(link, result => {
-      return new UniverseProperties(
+      universeProperties = new UniverseProperties(
         parseFloat($(result).find('speed').get(0).textContent),
         parseFloat($(result).find('speedFleet').get(0).textContent),
         parseFloat($(result).find('debrisFactor').get(0).textContent),
         parseFloat($(result).find('debrisFactorDef').get(0).textContent),
       )
-    }))
+    })).then(_ => universeProperties)
   }
 }
 
 abstract class Storable {
-  static load<A>(saveName: string, decoder: Decoder<A>): A {
-    const json: Object | null = Optional.apply(localStorage.getItem(saveName))
+  static load<A>(saveName: string, decoder: Decoder<A>): Result<A> {
+    return Optional.apply(localStorage.getItem(saveName))
       .map(JSON.parse)
-      .orNull
-      //.getOrThrow(`Could not find ${saveName} in storage!`)
-    return decoder.decode(json)
+      .toRight(`Could not find ${saveName} in storage!`)
+      .flatMap(json => decoder.decode(json))
   }
 
   save(saveName: string, encoder: Encoder<this>): void {
-    localStorage.setItem(saveName, JSON.stringify(encoder.encode(this)))
+    const json = JSON.stringify(encoder.encode(this));
+    if (json === null) {
+      localStorage.removeItem(saveName)
+    } else {
+      localStorage.setItem(saveName, json)
+    }
   }
 }
 
@@ -1093,23 +1260,24 @@ class Coordinates implements HashCodeAndEquals {
 
   static get codec(): Codec<Coordinates> {
     class CoordinatesCodec implements Codec<Coordinates> {
-      encode(a: Coordinates): Object | null {
-        return {
+      encode(a: Coordinates): Object {
+        return Codecs.object.encode({
           galaxy: a.galaxy,
           system: a.system,
           position: a.position,
-        }
+        })
       }
 
-      decode(json: Object | null): Coordinates {
-        if (json === null) {
-          throw new Error("Trying to decode Coordinates from null json")
-        } else {
-          // @ts-ignore
+      decode(json: Object): Result<Coordinates> {
+        return Codecs.object.decode(json).map(jsonObject => {
+          const json = jsonObject as {
+            galaxy: number,
+            system: number,
+            position: number
+          }
           return new Coordinates(json.galaxy, json.system, json.position)
-        }
+        })
       }
-
     }
     return new CoordinatesCodec()
   }
@@ -1146,23 +1314,24 @@ class Debris {
 
   static get codec(): Codec<Debris> {
     class DebrisCodec implements Codec<Debris> {
-      encode(a: Debris): Object | null {
-        return {
+      encode(a: Debris): Object {
+        return Codecs.object.encode({
           metal: a.metal,
           crystal: a.crystal,
-        }
+        })
       }
 
-      decode(json: Object | null): Debris {
-        if (json === null) {
-          throw new Error("Trying to decode Debris from null json")
-        } else {
-          // @ts-ignore
-          return new Debris(Optional.parseInt(json.metal).get, Optional.parseInt(json.crystal).get)
-        }
+      decode(json: Object): Result<Debris> {
+        return Codecs.object.decode(json).map(jsonObject => {
+          const json = jsonObject as {
+            metal: number,
+            crystal: number,
+          }
+          return new Debris(json.metal, json.crystal)
+        })
       }
-
     }
+
     return new DebrisCodec()
   }
 }
@@ -1181,23 +1350,24 @@ class Resources extends Debris {
 
   static get codec(): Codec<Resources> {
     class ResourcesCodec implements Codec<Resources> {
-      encode(a: Resources): Object | null {
-        return {
+      encode(a: Resources): Object {
+        return Codecs.object.encode({
           metal: a.metal,
           crystal: a.crystal,
           deuterium: a.deuterium,
-        }
+        })
       }
 
-      decode(json: Object | null): Resources {
-        if (json === null) {
-          throw new Error("Trying to decode Resources from null json")
-        } else {
-          // @ts-ignore
-          return new Resources(Optional.parseInt(json.metal).get, Optional.parseInt(json.crystal).get, Optional.parseInt(json.deuterium).get)
-        }
+      decode(json: Object): Result<Resources> {
+        return Codecs.object.decode(json).map(jsonObject => {
+          const json = jsonObject as {
+            metal: number,
+            crystal: number,
+            deuterium: number,
+          }
+          return new Resources(json.metal, json.crystal, json.deuterium)
+        })
       }
-
     }
     return new ResourcesCodec()
   }
@@ -1213,24 +1383,26 @@ class ResourcesWithEnergy extends Resources {
 
   static get codec(): Codec<ResourcesWithEnergy> {
     class ResourcesWithEnergyCodec implements Codec<ResourcesWithEnergy> {
-      encode(a: ResourcesWithEnergy): Object | null {
-        return {
+      encode(a: ResourcesWithEnergy): Object {
+        return Codecs.object.encode({
           metal: a.metal,
           crystal: a.crystal,
           deuterium: a.deuterium,
           energy: a.energy,
-        }
+        })
       }
 
-      decode(json: Object | null): ResourcesWithEnergy {
-        if (json === null) {
-          throw new Error("Trying to decode ResourcesWithEnergy from null json")
-        } else {
-          // @ts-ignore
-          return new ResourcesWithEnergy(Optional.parseInt(json.metal).get, Optional.parseInt(json.crystal).get, Optional.parseInt(json.deuterium).get, Optional.parseInt(json.energy).get)
-        }
+      decode(json: Object): Result<ResourcesWithEnergy> {
+        return Codecs.object.decode(json).map(jsonObject => {
+          const json = jsonObject as {
+            metal: number,
+            crystal: number,
+            deuterium: number,
+            energy: number,
+          }
+          return new ResourcesWithEnergy(json.metal, json.crystal, json.deuterium, json.energy)
+        })
       }
-
     }
     return new ResourcesWithEnergyCodec()
   }
@@ -1303,23 +1475,23 @@ abstract class SectionWithEntities<A extends Entity> extends Section {
     section: new (all: HashMap<A, number>, date: Date) => Section
   ): Codec<Section> {
     class SectionWithEntitiesCodec implements Codec<Section> {
-      encode(a: Section): Object | null {
-        return {
+      encode(a: Section): Object {
+        return Codecs.object.encode({
           all: a.all.fold({}, (acc, thing, amount) => {
             acc[thing.name] = amount
             return acc
           }),
-          date: a.date,
-        }
+          date: Codecs.date.encode(a.date),
+        })
       }
-      decode(json: Object | null): Section {
-        if (json === null) {
-          throw new Error(`Trying to decode SectionWithEntities from null json`)
-        } else {
+      decode(json: Object): Result<Section> {
+        return Codecs.object.decode(json).flatMap(jsonObject => {
+          const json = jsonObject as {
+            all: Object,
+            date: string,
+          }
           const thingMap = new HashMap<A, number>()
-          // @ts-ignore
           for (const name in json.all) {
-            // @ts-ignore
             if (json.all.hasOwnProperty(name)) {
               const amount = json[name]
               if (Number.isInteger(amount) && amount > 0) {
@@ -1328,9 +1500,8 @@ abstract class SectionWithEntities<A extends Entity> extends Section {
               }
             }
           }
-          // @ts-ignore
-          return new section(thingMap, json.date)
-        }
+          return Codecs.date.decode(json.date).map(date => new section(thingMap, date))
+        })
       }
     }
     return new SectionWithEntitiesCodec()
@@ -1411,24 +1582,30 @@ class ResourcesSection extends Section {
 
   static codec(resourcesCodec: Codec<ResourcesWithEnergy> = ResourcesWithEnergy.codec): Codec<ResourcesSection> {
     class ResourcesSectionCodec implements Codec<ResourcesSection> {
-      encode(a: ResourcesSection): Object | null {
-        return {
+      encode(a: ResourcesSection): Object {
+        return Codecs.object.encode({
           resources: resourcesCodec.encode(a.resources),
           plunderRatio: a.plunderRatio,
-          date: a.date,
-        }
+          date: Codecs.date.encode(a.date),
+        })
       }
 
-      decode(json: Object | null): ResourcesSection {
-        if (json === null) {
-          throw new Error("Trying to decode ResourcesSection from null json")
-        } else {
-          // @ts-ignore
-          return new ResourcesSection(resourcesCodec.decode(json.resources), parseFloat(json.plunderRatio), json.date)
-        }
+      decode(json: Object): Result<ResourcesSection> {
+        return Codecs.object.decode(json).flatMap(jsonObject => {
+          const json = jsonObject as {
+            resources: string,
+            plunderRatio: number,
+            date: string,
+          }
+          return resourcesCodec.decode(json.resources).flatMap(resources =>
+            Codecs.date.decode(json.date).map(date =>
+              new ResourcesSection(resources, json.plunderRatio, date)
+            )
+          )
+        })
       }
-
     }
+
     return new ResourcesSectionCodec()
   }
 }
@@ -1478,23 +1655,28 @@ class DebrisSection extends Section {
 
   static codec(debrisCodec: Codec<Debris> = Debris.codec): Codec<DebrisSection> {
     class DebrisSectionCodec implements Codec<DebrisSection> {
-      encode(a: DebrisSection): Object | null {
-        return {
+      encode(a: DebrisSection): Object {
+        return Codecs.object.encode({
           debris: debrisCodec.encode(a.debris),
-          date: a.date,
-        }
+          date: Codecs.date.encode(a.date),
+        })
       }
 
-      decode(json: Object | null): DebrisSection {
-        if (json === null) {
-          throw new Error("Trying to decode DebrisSection from null json")
-        } else {
-          // @ts-ignore
-          return new DebrisSection(debrisCodec.decode(json.debris), json.date)
-        }
+      decode(json: Object): Result<DebrisSection> {
+        return Codecs.object.decode(json).flatMap(jsonObject => {
+          const json = jsonObject as {
+            debris: string,
+            date: string,
+          }
+          return debrisCodec.decode(json.debris).flatMap(debris =>
+            Codecs.date.decode(json.date).map(date =>
+              new DebrisSection(debris, date)
+            )
+          )
+        })
       }
-
     }
+
     return new DebrisSectionCodec()
   }
 }
@@ -1639,7 +1821,6 @@ class ParsedReport extends Message {
   }
 
   static codec(
-    dateCoder: Codec<Date> = dateCodec(),
     resourcesCodec: Codec<ResourcesSection> = ResourcesSection.codec(),
     debrisSectionCodec: Codec<DebrisSection> = DebrisSection.codec(),
     fleetsCodec: Codec<Fleets> = Fleets.codec,
@@ -1653,24 +1834,23 @@ class ParsedReport extends Message {
     const optionalBuildingsCodec: Codec<Optional<Buildings>> = Optional.codec(buildingsCodec)
     const optionalResearchesCodec: Codec<Optional<Researches>> = Optional.codec(researchesCodec)
     class ParsedReportCodec implements Codec<ParsedReport> {
-      encode(a: ParsedReport): Object | null {
-        return {
+      encode(a: ParsedReport): Object {
+        return Codecs.object.encode({
           id: a.id,
-          date: dateCoder.encode(a.date),
+          date: Codecs.date.encode(a.date),
           resources: resourcesCodec.encode(a.resources),
           existingDebris: optionalDebrisSectionCodec.encode(a.existingDebris),
           fleets: optionalFleetsCodec.encode(a.fleets),
           defences: optionalDefencesCodec.encode(a.defences),
           buildings: optionalBuildingsCodec.encode(a.buildings),
           researches: optionalResearchesCodec.encode(a.researches),
-        }
+        })
       }
-      decode(json: Object | null): ParsedReport {
-        if (json === null) {
-          throw new Error("Trying to decode Universe from null json")
-        } else {
-          const j = json as {
-            id: string,
+
+      decode(json: Object): Result<ParsedReport> {
+        return Codecs.object.decode(json).flatMap(jsonObject => {
+          const json = jsonObject as {
+            id: number,
             date: string,
             resources: string,
             existingDebris: string,
@@ -1679,17 +1859,23 @@ class ParsedReport extends Message {
             buildings: string,
             researches: string,
           }
-          return new ParsedReport(
-            Optional.parseInt(j.id).get,
-            dateCoder.decode(j.date),
-            resourcesCodec.decode(j.resources),
-            optionalDebrisSectionCodec.decode(j.existingDebris),
-            optionalFleetsCodec.decode(j.fleets),
-            optionalDefencesCodec.decode(j.defences),
-            optionalBuildingsCodec.decode(j.buildings),
-            optionalResearchesCodec.decode(j.researches),
+
+          return Codecs.date.decode(json.date).flatMap(date =>
+            resourcesCodec.decode(json.resources).flatMap(resources =>
+              optionalDebrisSectionCodec.decode(json.existingDebris).flatMap(existingDebris =>
+                optionalFleetsCodec.decode(json.fleets).flatMap(fleets =>
+                  optionalDefencesCodec.decode(json.defences).flatMap(defences =>
+                    optionalBuildingsCodec.decode(json.buildings).flatMap(buildings =>
+                      optionalResearchesCodec.decode(json.researches).map(researches =>
+                        new ParsedReport(json.id, date, resources, existingDebris, fleets, defences, buildings, researches)
+                      )
+                    )
+                  )
+                )
+              )
+            )
           )
-        }
+        })
       }
     }
     return new ParsedReportCodec()
@@ -1795,30 +1981,35 @@ class Settings extends Storable {
   static codec(researchesCodec: Codec<Researches> = Researches.codec): Codec<Settings> {
     const optionalResearchesCodec =  Optional.codec<Researches>(researchesCodec)
     class SettingsCodec implements Codec<Settings> {
-      encode(a: Settings): Object | null {
-        return {
+      encode(a: Settings): Object {
+        return Codecs.object.encode({
           researches: optionalResearchesCodec.encode(a.researches),
           defaultProbes: a.defaultProbes,
           lastSortKey: a.lastSortKey,
           lastSortOrder: a.lastSortOrder
-        }
+        })
       }
 
-      decode(json: Object | null): Settings {
-        if (json === null) {
-          return new Settings()
-        } else {
-          // @ts-ignore
-          return new Settings(optionalResearchesCodec.decode(json.researches), Optional.parseInt(json.defaultProbes).get, json.lastSortKey, json.lastSortOrder)
-        }
-      }
+      decode(json: Object): Result<Settings> {
+        return Codecs.object.decode(json).flatMap(jsonObject => {
+          const json = jsonObject as {
+            researches: string,
+            defaultProbes: number,
+            lastSortKey: string,
+            lastSortOrder: Direction,
+          }
 
+          return optionalResearchesCodec.decode(json.researches).map(researches =>
+            new Settings(researches, json.defaultProbes, json.lastSortKey, json.lastSortOrder)
+          )
+        })
+      }
     }
     return new SettingsCodec()
   }
 
   static loadFromLocalStorage(): Settings {
-    return this.load(Settings.saveName, Settings.codec())
+    return this.load(Settings.saveName, Settings.codec()).getOrElse(new Settings())
   }
 
   saveToLocalStorage() {
@@ -1853,29 +2044,29 @@ class Player {
   ): Codec<Player> {
     const optionalResearchesCodec =  Optional.codec<Researches>(researchesCodec)
     class PlayerCodec implements Codec<Player> {
-      encode(a: Player): Object | null {
-        return {
+      encode(a: Player): Object {
+        return Codecs.object.encode({
           id: a.id,
           name: a.name,
           planets: a.planets,
           researches: optionalResearchesCodec.encode(a.researches)
-        }
+        })
       }
 
-      decode(json: Object | null): Player {
-        if (json === null) {
-          throw new Error("Trying to decode Player from null json")
-        } else {
-          const j = json as {
-            id,
-            name,
-            planets,
-            researches,
+      decode(json: Object): Result<Player> {
+        return Codecs.object.decode(json).flatMap(jsonObject => {
+          const json = jsonObject as {
+            id: number,
+            name: string,
+            planets: Array<number>,
+            researches: string,
           }
-          return new Player(Optional.parseInt(j.id).get, j.name, j.planets, optionalResearchesCodec.decode(j.researches))
-        }
-      }
 
+          return optionalResearchesCodec.decode(json.researches).map(researches =>
+            new Player(json.id, json.name, json.planets, researches)
+          )
+        })
+      }
     }
     return new PlayerCodec()
   }
@@ -1918,41 +2109,41 @@ class Moon extends CelestialBody {
     buildingsCodec: Codec<Buildings> = Buildings.codec,
     defencesCodec: Codec<Defences> = Defences.codec,
   ): Codec<Moon> {
-    const optionalNumberCodec = Optional.codec(primitiveCodec<number>())
+    const optionalNumberCodec = Optional.codec(Codecs.number)
     const optionalBuildingsCodec = Optional.codec(buildingsCodec)
     const optionalDefencesCodec = Optional.codec(defencesCodec)
     class MoonCodec implements Codec<Moon> {
-      encode(a: Moon): Object | null {
-        return {
+      encode(a: Moon): Object {
+        return Codecs.object.encode({
           id: a.id,
           coordinates: coordinatesCodec.encode(a.coordinates),
           buildings: optionalBuildingsCodec.encode(a.buildings),
           defences: optionalDefencesCodec.encode(a.defences),
           size: optionalNumberCodec.encode(a.size)
-        }
+        })
       }
 
-      decode(json: Object | null): Moon {
-        if (json === null) {
-          throw new Error("Trying to decode Moon from null json")
-        } else {
-          const j = json as {
-            id,
-            coordinates,
-            buildings,
-            defences,
-            size,
+      decode(json: Object): Result<Moon> {
+        return Codecs.object.decode(json).flatMap(jsonObject => {
+          const json = jsonObject as {
+            id: number,
+            coordinates: string,
+            buildings: string,
+            defences: string,
+            size: string,
           }
-          return new Moon(
-            Optional.parseInt(j.id).get,
-            coordinatesCodec.decode(j.coordinates),
-            optionalBuildingsCodec.decode(j.buildings),
-            optionalDefencesCodec.decode(j.defences),
-            optionalNumberCodec.decode(j.size)
-          )
-        }
-      }
 
+          return coordinatesCodec.decode(json.coordinates).flatMap(coordinates =>
+            optionalBuildingsCodec.decode(json.buildings).flatMap(buildings =>
+              optionalDefencesCodec.decode(json.defences).flatMap(defences =>
+                optionalNumberCodec.decode(json.size).map(size =>
+                  new Moon(json.id, coordinates, buildings, defences, size)
+                )
+              )
+            )
+          )
+        })
+      }
     }
     return new MoonCodec()
   }
@@ -1981,41 +2172,41 @@ class Planet extends CelestialBody {
     buildingsCodec: Codec<Buildings> = Buildings.codec,
     defencesCodec: Codec<Defences> = Defences.codec,
   ): Codec<Planet> {
-    const optionalNumberCodec = Optional.codec(primitiveCodec<number>())
+    const optionalNumberCodec = Optional.codec(Codecs.number)
     const optionalBuildingsCodec = Optional.codec(buildingsCodec)
     const optionalDefencesCodec = Optional.codec(defencesCodec)
     class PlanetCodec implements Codec<Planet> {
-      encode(a: Planet): Object | null {
-        return {
+      encode(a: Planet): Object {
+        return Codecs.object.encode({
           id: a.id,
           coordinates: coordinatesCodec.encode(a.coordinates),
           buildings: optionalBuildingsCodec.encode(a.buildings),
           defences: optionalDefencesCodec.encode(a.defences),
           moonId: optionalNumberCodec.encode(a.moonId)
-        }
+        })
       }
 
-      decode(json: Object | null): Planet {
-        if (json === null) {
-          throw new Error("Trying to decode Planet from null json")
-        } else {
-          const j = json as {
-            id,
-            coordinates,
-            buildings,
-            defences,
-            moonId,
+      decode(json: Object): Result<Planet> {
+        return Codecs.object.decode(json).flatMap(jsonObject => {
+          const json = jsonObject as {
+            id: number,
+            coordinates: string,
+            buildings: string,
+            defences: string,
+            moonId: string,
           }
-          return new Planet(
-            Optional.parseInt(j.id).get,
-            coordinatesCodec.decode(j.coordinates),
-            optionalBuildingsCodec.decode(j.buildings),
-            optionalDefencesCodec.decode(j.defences),
-            optionalNumberCodec.decode(j.moonId)
-          )
-        }
-      }
 
+          return coordinatesCodec.decode(json.coordinates).flatMap(coordinates =>
+            optionalBuildingsCodec.decode(json.buildings).flatMap(buildings =>
+              optionalDefencesCodec.decode(json.defences).flatMap(defences =>
+                optionalNumberCodec.decode(json.moonId).map(moonId =>
+                  new Planet(json.id, coordinates, buildings, defences, moonId)
+                )
+              )
+            )
+          )
+        })
+      }
     }
     return new PlanetCodec()
   }
@@ -2277,20 +2468,20 @@ class Universe extends Storable {
 
   private static playersCodec(playerCodec: Codec<Player> = Player.codec()): Codec<HashMap<string, Player>> {
     class PlayersCodec implements Codec<HashMap<string, Player>> {
-      encode(a: HashMap<string, Player>): Object | null {
-        return a.values.map(player => playerCodec.encode(player));
+      get playerArrayCodec(): Codec<Array<Player>> {
+        return new ArrayCodec(playerCodec)
       }
 
-      decode(json: Object | null): HashMap<string, Player> {
-        if (json === null) {
-          throw new Error("Trying to decode Players from null json")
-        } else {
-          return (json as Array<string>).reduce((map, string) => {
-            const player = playerCodec.decode(string)
-            map.set(player.name, player)
-            return map
-          }, new HashMap<string, Player>(stringHashcode, instanceEquals))
-        }
+      encode(a: HashMap<string, Player>): Object {
+        return this.playerArrayCodec.encode(a.values)
+      }
+
+      decode(json: Object): Result<HashMap<string, Player>> {
+        return this.playerArrayCodec.decode(json).map(players => {
+          const map = new HashMap<string, Player>(stringHashcode, instanceEquals)
+          players.forEach(player => map.set(player.name, player))
+          return map
+        })
       }
     }
     return new PlayersCodec()
@@ -2298,21 +2489,20 @@ class Universe extends Storable {
 
   private static planetsCodec(planetsCodec: Codec<Planet> = Planet.codec()): Codec<HashMap<Coordinates, Planet>> {
     class PlanetsCodec implements Codec<HashMap<Coordinates, Planet>> {
-      encode(a: HashMap<Coordinates, Planet>): Object | null {
-        //console.log(a.values.map(planetsCodec.encode))
-        return a.values.map(planetsCodec.encode)
+      get planetsArrayCodec(): Codec<Array<Planet>> {
+        return new ArrayCodec(planetsCodec)
       }
 
-      decode(json: Object | null): HashMap<Coordinates, Planet> {
-        if (json === null) {
-          throw new Error("Trying to decode Planets from null json")
-        } else {
-          return (json as Array<Object>).reduce<HashMap<Coordinates, Planet>>((map, planetObject) => {
-            const planet = planetsCodec.decode(planetObject)
-            map.set(planet.coordinates, planet)
-            return map
-          }, new HashMap<Coordinates, Planet>())
-        }
+      encode(a: HashMap<Coordinates, Planet>): Object {
+        return this.planetsArrayCodec.encode(a.values)
+      }
+
+      decode(json: Object): Result<HashMap<Coordinates, Planet>> {
+        return this.planetsArrayCodec.decode(json).map(planets => {
+          const map = new HashMap<Coordinates, Planet>()
+          planets.forEach(planet => map.set(planet.coordinates, planet))
+          return map
+        })
       }
     }
     return new PlanetsCodec()
@@ -2320,69 +2510,71 @@ class Universe extends Storable {
 
   private static moonsCodec(moonsCodec: Codec<Moon> = Moon.codec()): Codec<HashMap<Coordinates, Moon>> {
     class MoonsCodec implements Codec<HashMap<Coordinates, Moon>> {
-      encode(a: HashMap<Coordinates, Moon>): Object | null {
-        return a.values.map(planet => moonsCodec.encode(planet));
+      get moonsArrayCodec(): Codec<Array<Moon>> {
+        return new ArrayCodec(moonsCodec)
       }
 
-      decode(json: Object | null): HashMap<Coordinates, Moon> {
-        if (json === null) {
-          throw new Error("Trying to decode Moons from null json")
-        } else {
-          return (json as Array<string>).reduce((map, string) => {
-            const moon = moonsCodec.decode(string)
-            map.set(moon.coordinates, moon)
-            return map
-          }, new HashMap<Coordinates, Moon>())
-        }
+      encode(a: HashMap<Coordinates, Moon>): Object {
+        return this.moonsArrayCodec.encode(a.values)
+      }
+
+      decode(json: Object): Result<HashMap<Coordinates, Moon>> {
+        return this.moonsArrayCodec.decode(json).map(moons => {
+          const map = new HashMap<Coordinates, Moon>()
+          moons.forEach(moon => map.set(moon.coordinates, moon))
+          return map
+        })
       }
     }
     return new MoonsCodec()
   }
 
   static codec(
-    dateCoder: Codec<Date> = dateCodec(),
     playerCodec: Codec<HashMap<string, Player>> = Universe.playersCodec(),
     planetsCodec: Codec<HashMap<Coordinates, Planet>> = Universe.planetsCodec(),
     moonsCodec: Codec<HashMap<Coordinates, Moon>> = Universe.moonsCodec(),
   ): Codec<Universe> {
-    const optionalDateCodec = Optional.codec<Date>(dateCoder)
+    const optionalDateCodec = Optional.codec<Date>(Codecs.date)
     class UniverseCodec implements Codec<Universe> {
-      encode(a: Universe): Object | null {
-        return {
+      encode(a: Universe): Object {
+        return Codecs.object.encode({
           playersAPIDate: optionalDateCodec.encode(a.playersAPIDate),
           universeAPIDate: optionalDateCodec.encode(a.universeAPIDate),
           players: playerCodec.encode(a.players),
           planets: planetsCodec.encode(a.planets),
           moons: moonsCodec.encode(a.moons),
-        }
+        })
       }
 
-      decode(json: Object | null): Universe {
-        if (json === null) {
-          return new Universe()
-        } else {
-          const j = json as {
-            playersAPIDate: Object,
-            universeAPIDate: Object,
-            players: Object,
-            planets: Object,
-            moons: Object,
+      decode(json: Object): Result<Universe> {
+        return Codecs.object.decode(json).flatMap(jsonObject => {
+          const json = jsonObject as {
+            playersAPIDate: string,
+            universeAPIDate: string,
+            players: string,
+            planets: string,
+            moons: string,
           }
-          return new Universe(
-            optionalDateCodec.decode(j.playersAPIDate),
-            optionalDateCodec.decode(j.universeAPIDate),
-            playerCodec.decode(j.players),
-            planetsCodec.decode(j.planets),
-            moonsCodec.decode(j.moons)
+
+          return optionalDateCodec.decode(json.playersAPIDate).flatMap(playersAPIDate =>
+            optionalDateCodec.decode(json.universeAPIDate).flatMap(universeAPIDate =>
+              playerCodec.decode(json.players).flatMap(players =>
+                planetsCodec.decode(json.planets).flatMap(planets =>
+                  moonsCodec.decode(json.moons).map(moons =>
+                    new Universe(playersAPIDate, universeAPIDate, players, planets, moons)
+                  )
+                )
+              )
+            )
           )
-        }
+        })
       }
     }
     return new UniverseCodec()
   }
 
   static loadFromLocalStorage(): Universe {
-    return this.load(Universe.saveName, Universe.codec())
+    return this.load(Universe.saveName, Universe.codec()).getOrElse(new Universe())
   }
 
   saveToLocalStorage(): void {
@@ -2433,19 +2625,20 @@ class ParsedReportsRepository extends Storable {
 
   private static allReportsCodec(parsedReportCodec: Codec<ParsedReport> = ParsedReport.codec()): Codec<HashMap<number, ParsedReport>> {
     class AllReportsCodec implements Codec<HashMap<number, ParsedReport>> {
-      encode(a: HashMap<number, ParsedReport>): Object | null {
-        return a.values.map(report => parsedReportCodec.encode(report));
+      get parsedReportArrayCodec(): Codec<Array<ParsedReport>> {
+        return new ArrayCodec(parsedReportCodec)
       }
-      decode(json: Object | null): HashMap<number, ParsedReport> {
-        if (json === null) {
-          throw new Error("Trying to decode AllReports from null json")
-        } else {
-          return (json as Array<string>).reduce((map, string) => {
-            const report = parsedReportCodec.decode(string)
-            map.set(report.id, report)
-            return map
-          }, new HashMap<number, ParsedReport>())
-        }
+
+      encode(a: HashMap<number, ParsedReport>): Object {
+        return this.parsedReportArrayCodec.encode(a.values)
+      }
+
+      decode(json: Object): Result<HashMap<number, ParsedReport>> {
+        return this.parsedReportArrayCodec.decode(json).map(reports => {
+          const map = new HashMap<number, ParsedReport>()
+          reports.forEach(report => map.set(report.id, report))
+          return map
+        })
       }
     }
     return new AllReportsCodec()
@@ -2455,30 +2648,19 @@ class ParsedReportsRepository extends Storable {
     allReportsCodec: Codec<HashMap<number, ParsedReport>> = ParsedReportsRepository.allReportsCodec()
   ): Codec<ParsedReportsRepository> {
     class ParsedReportsRepositoryCodec implements Codec<ParsedReportsRepository> {
-      encode(a: ParsedReportsRepository): Object | null {
-        return {
-          allReports: allReportsCodec.encode(a.allReports),
-        }
+      encode(a: ParsedReportsRepository): Object {
+        return allReportsCodec.encode(a.allReports)
       }
 
-      decode(json: Object | null): ParsedReportsRepository {
-        if (json === null) {
-          return new ParsedReportsRepository()
-        } else {
-          const j = json as {
-            allReports: Array<string>,
-          }
-          return new ParsedReportsRepository(
-            allReportsCodec.decode(j.allReports),
-          )
-        }
+      decode(json: Object): Result<ParsedReportsRepository> {
+        return allReportsCodec.decode(json).map(allReports => new ParsedReportsRepository(allReports))
       }
     }
     return new ParsedReportsRepositoryCodec()
   }
 
   static loadFromLocalStorage(): ParsedReportsRepository {
-    return this.load(ParsedReportsRepository.saveName(), ParsedReportsRepository.codec())
+    return this.load(ParsedReportsRepository.saveName(), ParsedReportsRepository.codec()).getOrElse(new ParsedReportsRepository())
   }
 
   saveToLocalStorage(): void {
@@ -2553,16 +2735,19 @@ class MessagesParser {
 
   private readonly config = {childList : true}
   private outerTarget: Optional<Element> = Optional.apply(document.querySelector('#ui-id-2'))
-  private innerTarget: Optional<Element> = this.outerTarget.flatMap(outerTarget => Optional.apply(outerTarget.querySelector('.ui-tabs-panel.ui-widget-content.ui-corner-bottom')))
+  //private innerTarget: Optional<Element> = this.outerTarget.flatMap(outerTarget => Optional.apply(outerTarget.querySelector('.ui-tabs-panel.ui-widget-content.ui-corner-bottom')))
+  private get innerTarget(): Optional<Element> {
+    return this.outerTarget.flatMap(outerTarget => Optional.apply(outerTarget.querySelector('.ui-tabs-panel.ui-widget-content.ui-corner-bottom')))
+  }
 
   innerObserver = new MutationObserver(() => {
-    console.log("Inner changed");
+    console.log("Inner changed")
     return this.run()
     //SpyHelper.getFirstPage($(innerTarget).find('.tab_inner'));
   })
 
   outerObserver = new MutationObserver(() => {
-    console.log("Outer changed");
+    console.log("Outer changed")
     this.innerTarget.map(target => this.innerObserver.observe(target, this.config))
   })
 
@@ -2594,7 +2779,7 @@ class MessagesParser {
     return Promise.resolve($.post("?page=messages", body, callback))
   }
 
-  private getParsedDate(msgID: number, report: Element): Optional<Date> {
+  private static getParsedDate(msgID: number, report: Element): Optional<Date> {
     const date = $(report).find('.msg_date');
     date.addClass('sortable');
     const dateElement = date.get(0);
@@ -2619,55 +2804,50 @@ class MessagesParser {
       })
   }
 
-  private handleMessage(msgID: number, report: Element): Promise<void> {
-    const coordinates = Coordinates.fromReport(report)
-      .getOrThrow("Failed to get coordinates from report!")
+  private static async handleMessage(msgID: number, report: Element): Promise<void> {
+    const coordinates = await Coordinates.fromReport(report).toRight("Failed to get coordinates from report!").toPromise
     const iconDiv = $(report).find(".msg_actions").first()
-    const reportDate = this.getParsedDate(msgID, report)
-      .getOrThrow(`Could not get date for report with ID: ${msgID}`)
+    const reportDate = await MessagesParser.getParsedDate(msgID, report).toRight(`Could not get date for report with ID: ${msgID}`).toPromise
 
     if ($(report).find('.msg_sender').get(0).innerHTML !== "Fleet Command" || coordinates.position > 15) {
       if (coordinates.position <= 15) {
         iconDiv.append(SpyHelper.createSpyIcon(coordinates, 1));
       }
       spyHelper.messages.push(new Message(msgID, reportDate));
-      return Promise.resolve()
     }
-
-
     return Promise.resolve()
   }
 
-  private handleAllMessages(): Promise<void> {
+  private static handleAllMessages(): Promise<void> {
     const requests = $(".msg:visible").toArray().reduce((acc, report) => {
       const msgId: number = $(report).data("msg-id");
-      acc.push(this.handleMessage(msgId, report));
+      //console.log(msgId, report)
+      acc.push(MessagesParser.handleMessage(msgId, report));
       return acc;
     }, new Array<Promise<void>>())
 
-    return Promise.all(requests).then(() => {})
+    return Promise.all(requests).then(_ => {})
   }
 
   run(): Promise<void> {
     return this.innerTarget
       .map(target => $(target).find('.tab_inner'))
       .flatMap(innerTab => {
-        function callback(c: Element) {
+        function appendMessages(c: Element) {
           const content = $(c).find('.msg');
           innerTab.append(content); //Append all messages from this page to the message page.
         }
-
         return this.extractPageNumber(innerTab).map(numberOfPages => {
           let requests = new Array<Promise<void>>()
           for (let i = 2; i <= numberOfPages; i++) { //Skip page 1 as we already have it.
-            const pageRequest = MessagesParser.getPage(i, callback)
+            const pageRequest = MessagesParser.getPage(i, appendMessages)
             requests.push(pageRequest)
           }
           return Promise.all(requests)
         })
       })
       .getOrThrow("Failed to append messages")
-      .then(this.handleAllMessages)
+      .then(MessagesParser.handleAllMessages)
       .then(() => {
         $(".pagination").remove() //Remove the page changer as we have all pages loaded already.
         console.log("All done")
@@ -2706,7 +2886,7 @@ class SpyHelper {
     return spyHelperPromise.then(spyHelper => spyHelper.universe.updateEverything().then(() => spyHelper))
   }
 
-  run() {
+  run(): Promise<void> {
     if (/research/.test(location.href)) {
       //Currently viewing research page.
       this.settings.updateResearch()
@@ -2716,8 +2896,10 @@ class SpyHelper {
     } else if (/messages/.test(location.href)) {
       //Currently viewing messages page.
       console.log(`startMessagesObservers`)
+      new MessagesParser(this.universeProperties, this.settings, this.universe, this.parsedReportsRepository)
       //this.startMessagesObservers()
     }
+    return Promise.resolve()
   }
 
   static addIdAndSortKey(element: Element, msgID: number, sortKey: string): void {
@@ -2807,5 +2989,5 @@ $(() => SpyHelper.load.then(s => {
   spyHelper = s
   // @ts-ignore
   window.SpyHelper = s
-  s.run()
+  return s.run()
 }));

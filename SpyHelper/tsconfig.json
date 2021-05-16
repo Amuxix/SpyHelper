@@ -2,9 +2,10 @@
   "compilerOptions": {
     "outDir": "./target",
     "allowJs": false,
-    "target": "es2019",
+    "target": "ESNext",
     "strictNullChecks": true,
-    "alwaysStrict": true
+    "alwaysStrict": true,
+    "allowSyntheticDefaultImports": true
   },
   "include": [
     "./src/**/*"
