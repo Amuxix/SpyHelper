@@ -165,6 +165,15 @@ abstract class Optional<A> {
     }
   }
 
+  static parseFloat(string: string): Optional<number> {
+    const number = parseFloat(string)
+    if (isNaN(number) || !isFinite(number)) {
+      return None.instance
+    } else {
+      return new Some(number)
+    }
+  }
+
   abstract get get(): A
 
   abstract get isEmpty(): Boolean
@@ -181,9 +190,9 @@ abstract class Optional<A> {
     }
   }
 
-  getOrElse(ifEmpty: A): A {
+  getOrElse(ifEmpty: () => A): A {
     if (this.isEmpty) {
-      return ifEmpty
+      return ifEmpty()
     } else {
       return this.get
     }
@@ -571,7 +580,41 @@ class Entry<K, V> {
   }
 }
 
-class HashMap<K, V> {
+abstract class HashMap<K, V> {
+  abstract add(key: K, value: V): HashMap<K,V>
+  abstract delete(key: K): HashMap<K,V>
+  abstract get(key: K): Optional<V>
+  abstract get entries(): Array<Entry<K, V>>
+
+  abstract get create(): HashMap<K,V>
+
+  get keys(): Array<K> {
+    return this.entries.map(entry => entry.key)
+  }
+
+  get values(): Array<V> {
+    return this.entries.map(entry => entry.value)
+  }
+
+  fold<B>(zero: B, op: (acc: B, key: K, value: V) => B) {
+    return this.entries.reduce<B>((acc: B, entry: Entry<K, V>) => op(acc, entry.key, entry.value), zero)
+  }
+
+  getOrElse(key: K, defaultValue: () => V) {
+    return this.get(key).getOrElse(defaultValue);
+  }
+
+  filterKeys(predicate): HashMap<K,V> {
+    return this.fold(this.create, (acc, key, value) => {
+      if (predicate(key)) {
+        acc.add(key, value);
+      }
+      return acc;
+    })
+  }
+}
+
+class MutableHashMap<K, V> extends HashMap<K,V> {
   private readonly fill: number
   private maxSize: number
   private size: number = 0
@@ -586,6 +629,7 @@ class HashMap<K, V> {
     maxSize: number = 16,
     fill: number = 0.75,
   ) {
+    super()
     this.hashCode = hashCode
     this.equals = equals
     this.maxSize = maxSize;
@@ -595,7 +639,7 @@ class HashMap<K, V> {
   }
 
   static apply<KH extends HashCodeAndEquals, V>() {
-    return new HashMap<KH, V>(
+    return new MutableHashMap<KH, V>(
       (k: KH) => k.hashCode(),
       (o1: KH, o2: KH) => o1.equals(o2),
     )
@@ -605,7 +649,11 @@ class HashMap<K, V> {
     hashCode: (k: K) => number,
     equals: (o1: K, o2: K) => Boolean,
   ) {
-    return new HashMap<K, V>(hashCode, equals)
+    return new MutableHashMap<K, V>(hashCode, equals)
+  }
+
+  get create(): HashMap<K,V> {
+    return new MutableHashMap<K, V>(this.hashCode, this.equals)
   }
 
   private hash(key: K): number {
@@ -613,7 +661,7 @@ class HashMap<K, V> {
     return hashCode % this.maxSize
   }
 
-  private add(entry: Entry<K, V>): void {
+  private addEntry(entry: Entry<K, V>): void {
     const bucketID = this.hash(entry.key)
     const bucket = this.buckets[bucketID]
 
@@ -627,7 +675,7 @@ class HashMap<K, V> {
       }
 
       this.size += Optional.apply(bucket.find(e => this.equals(entry.key, e.key)))
-        .fold<number>(pushEntry(), e => {
+        .cata<number>(pushEntry, e => {
           e.value = entry.value
           return 0
         })
@@ -640,11 +688,10 @@ class HashMap<K, V> {
     this.size = 0
     const entries = this.buckets.flat()
     this.buckets = new Array(this.maxSize)
-    entries.forEach(entry => this.add(entry))
+    entries.forEach(entry => this.addEntry(entry))
   }
 
-  set(key: K, value: V): void {
-    const startSize = this.size
+  add(key: K, value: V): HashMap<K, V> {
     const bucketID = this.hash(key)
     const bucket = this.buckets[bucketID]
 
@@ -668,6 +715,7 @@ class HashMap<K, V> {
     if (this.size > this.threshold) {
       this.increaseMaxSize()
     }
+    return this
   }
 
   get(key: K): Optional<V> {
@@ -677,43 +725,68 @@ class HashMap<K, V> {
       .map(entry => entry.value)
   }
 
-  delete(key: K): void {
-    const startSize = this.size
+  delete(key: K): HashMap<K, V> {
     const bucketID = this.hash(key) % this.maxSize
     Optional.apply(this.buckets[bucketID])
       .map(bucket => {
         this.buckets[bucketID] = bucket.filter(entry => !this.equals(key, entry.key))
         this.size--
       })
+    return this
   }
 
   get entries(): Array<Entry<K, V>> {
     return this.buckets.flat()
   }
 
-  get keys(): Array<K> {
-    return this.entries.map(entry => entry.key)
+  get clone(): MutableHashMap<K, V> {
+    const map: MutableHashMap<K, V> = new MutableHashMap(this.hashCode, this.equals)
+    this.entries.forEach(entry => map.add(entry.key, entry.value))
+    return map
+  }
+}
+
+class ImmutableHashMap<K, V> extends HashMap<K, V> {
+  private readonly innerMap: MutableHashMap<K, V>
+
+  constructor(innerMap: MutableHashMap<K, V>) {
+    super()
+    this.innerMap = innerMap
   }
 
-  get values(): Array<V> {
-    return this.entries.map(entry => entry.value)
+  static apply<KH extends HashCodeAndEquals, V>() {
+    return new ImmutableHashMap(MutableHashMap.apply<KH, V>())
   }
 
-  fold<B>(zero: B, op: (acc: B, key: K, value: V) => B) {
-    return this.entries.reduce<B>((acc: B, entry: Entry<K, V>) => op(acc, entry.key, entry.value), zero)
+  static applyWithHashCodeAndEquals<K, V>(
+    hashCode: (k: K) => number,
+    equals: (o1: K, o2: K) => Boolean,
+  ) {
+    return new ImmutableHashMap(MutableHashMap.applyWithHashCodeAndEquals<K, V>(hashCode, equals))
   }
 
-  getOrElse(key: K, defaultValue: V) {
-    return this.get(key).getOrElse(defaultValue);
+  private cloneAndOP(f: (map: MutableHashMap<K, V>) => HashMap<K, V>): ImmutableHashMap<K, V> {
+    return new ImmutableHashMap<K, V>(f(this.innerMap.clone) as MutableHashMap<K, V>)
   }
 
-  filterKeys(predicate): HashMap<K, V> {
-    return this.fold(new HashMap(this.hashCode, this.equals), (acc, key, value) => {
-      if (predicate(key)) {
-        acc.set(key, value);
-      }
-      return acc;
-    })
+  add(key: K, value: V): HashMap<K, V> {
+    return this.cloneAndOP(map => map.add(key, value))
+  }
+
+  delete(key: K): HashMap<K, V> {
+    return this.cloneAndOP(map => map.delete(key))
+  }
+
+  get entries(): Array<Entry<K, V>> {
+    return this.innerMap.entries
+  }
+
+  get(key: K): Optional<V> {
+    return this.innerMap.get(key)
+  }
+
+  get create(): HashMap<K, V> {
+    return this.innerMap.create;
   }
 }
 
@@ -728,7 +801,7 @@ class HashMap<K, V> {
   }
 }*/
 
-class List<A> {
+/*class List<A> {
   readonly values: Array<A>
 
   constructor(values: Array<A> = new Array<A>()) {
@@ -752,7 +825,7 @@ class List<A> {
   }
 
 
-}
+}*/
 
 function identity<T>(t: T): T {
   return t
@@ -790,6 +863,16 @@ function html(literals, ...vars) {
   result += raw[raw.length - 1]
 
   return $.parseHTML(result)[0]
+}
+
+async function get(link: string): Promise<JQuery> {
+  const result = await new Promise<HTMLElement>(resolve => $.get(link, resolve))
+  return $(result)
+}
+
+async function getWithData(link: string, data: Object): Promise<JQuery> {
+  const result = await new Promise<HTMLElement>(resolve => $.get(link, data, resolve))
+  return $(result)
 }
 
 /************************************************ Models **************************************************************/
@@ -1208,17 +1291,17 @@ class UniverseProperties {
     this.debrisRatioDefence = debrisRatioDefence
   }
 
-  static get(): Promise<UniverseProperties> {
-    const link = `https://${UNIVERSE}/api/serverData.xml`
-    return new Promise<UniverseProperties>(resolve =>
-      $.get(link, result =>
-        resolve(new UniverseProperties(
-          parseFloat($(result).find("speed").get(0).textContent),
-          parseFloat($(result).find("speedFleet").get(0).textContent),
-          parseFloat($(result).find("debrisFactor").get(0).textContent),
-          parseFloat($(result).find("debrisFactorDef").get(0).textContent),
-        ))
-      )
+  static async get(): Promise<UniverseProperties> {
+    const result = await get(`https://${UNIVERSE}/api/serverData.xml`)
+    function getProperty(name: string): Promise<number> {
+      return Optional.apply(result.find(name).get(0).textContent).flatMap(Optional.parseFloat)
+        .toPromise(`Failed to get ${name} from universe settings XML`)
+    }
+    return new UniverseProperties(
+      await getProperty("speed"),
+      await getProperty("speedFleet"),
+      await getProperty("debrisFactor"),
+      await getProperty("debrisFactorDef"),
     )
   }
 }
@@ -1394,8 +1477,6 @@ class Debris {
 
   /**
    * Calculates the debris of destroy the given entities using the given debrisFactor
-   * @param entities {HashMap<Entity, Number>}
-   * @param debrisFactor {Number}
    */
   static calculateFor(entities: HashMap<Entity, number>, debrisFactor: number) {
     return entities.fold(new Debris(0, 0), (totalDebris, entity, amount) => {
@@ -1540,9 +1621,9 @@ abstract class SectionWithEntities<A extends Entity> extends Section {
         const entity = fromName(name).getOrThrow(`Could not find entity with name ${name}`)
         const amount = parseTextNumber($(element).find(".fright").get(0).innerHTML)
           .getOrThrow(`Could not find amount for ${name}`)
-        acc.set(entity, amount)
+        acc.add(entity, amount)
         return acc
-      }, HashMap.apply<E, number>())
+      }, ImmutableHashMap.apply<E, number>())
       return new section(all, date)
     })
   }
@@ -1553,7 +1634,7 @@ abstract class SectionWithEntities<A extends Entity> extends Section {
   }
 
   private amount(what: Entity) {
-    return this.all.getOrElse(what as A, 0)
+    return this.all.getOrElse(what as A, () => 0)
   }
 
   amountOf(what: Ship | Defence) {
@@ -1566,7 +1647,7 @@ abstract class SectionWithEntities<A extends Entity> extends Section {
 
   protected static innerCodec<A extends Entity, Section extends SectionWithEntities<A>>(
     fromName: (name: string) => Optional<A>,
-    section: new (all: HashMap<A, number>, date: Date) => Section,
+    section: new (all: ImmutableHashMap<A, number>, date: Date) => Section,
   ): Codec<Section> {
     class SectionWithEntitiesCodec implements Codec<Section> {
       encode(a: Section): Object {
@@ -1585,13 +1666,13 @@ abstract class SectionWithEntities<A extends Entity> extends Section {
             all: Object,
             date: string,
           }
-          const thingMap = HashMap.apply<A, number>()
+          const thingMap = ImmutableHashMap.apply<A, number>()
           for (const name in json.all) {
             if (json.all.hasOwnProperty(name)) {
               const amount = json[name]
               if (Number.isInteger(amount) && amount > 0) {
                 const thingType = fromName(name).getOrThrow(`Could not find ${name}`)
-                thingMap.set(thingType, amount)
+                thingMap.add(thingType, amount)
               }
             }
           }
@@ -1914,10 +1995,6 @@ class ParsedReport extends Message {
     return new ParsedReport(id, date, resources, existingDebris, fleets, defences, buildings, researches)
   }
 
-  /*static get(id: number): Promise<ParsedReport> {
-    return Promise.resolve($.get('index.php?page=messages', {ajax: 1, messageId: id}))
-  }*/
-
   static codec(
     resourcesCodec: Codec<ResourcesSection> = ResourcesSection.codec(),
     debrisSectionCodec: Codec<DebrisSection> = DebrisSection.codec(),
@@ -2042,26 +2119,26 @@ class Settings extends Storable {
     function getResearch(research: Research) {
       return Optional.apply($($(`[data-technology=${research.id}]`).find(".level").get(0)).attr("data-value"))
         .flatMap(Optional.parseInt)
-        .getOrElse(0)
+        .getOrElse(() => 0)
     }
 
-    const researches = HashMap.apply<Research, number>()
-    researches.set(ENERGY_TECHNOLOGY, getResearch(ENERGY_TECHNOLOGY))
-    researches.set(LASER_TECHNOLOGY, getResearch(LASER_TECHNOLOGY))
-    researches.set(ION_TECHNOLOGY, getResearch(ION_TECHNOLOGY))
-    researches.set(HYPERSPACE_TECHNOLOGY, getResearch(HYPERSPACE_TECHNOLOGY))
-    researches.set(PLASMA_TECHNOLOGY, getResearch(PLASMA_TECHNOLOGY))
-    researches.set(ESPIONAGE_TECHNOLOGY, getResearch(ESPIONAGE_TECHNOLOGY))
-    researches.set(COMPUTER_TECHNOLOGY, getResearch(COMPUTER_TECHNOLOGY))
-    researches.set(ASTROPHYSICS, getResearch(ASTROPHYSICS))
-    researches.set(INTERGALACTIC_RESEARCH_NETWORK, getResearch(INTERGALACTIC_RESEARCH_NETWORK))
-    researches.set(GRAVITON_TECHNOLOGY, getResearch(GRAVITON_TECHNOLOGY))
-    researches.set(COMBUSTION_DRIVE, getResearch(COMBUSTION_DRIVE))
-    researches.set(IMPULSE_DRIVE, getResearch(IMPULSE_DRIVE))
-    researches.set(HYPERSPACE_DRIVE, getResearch(HYPERSPACE_DRIVE))
-    researches.set(WEAPONS_TECHNOLOGY, getResearch(WEAPONS_TECHNOLOGY))
-    researches.set(SHIELDING_TECHNOLOGY, getResearch(SHIELDING_TECHNOLOGY))
-    researches.set(ARMOUR_TECHNOLOGY, getResearch(ARMOUR_TECHNOLOGY))
+    const researches = ImmutableHashMap.apply<Research, number>()
+    researches.add(ENERGY_TECHNOLOGY, getResearch(ENERGY_TECHNOLOGY))
+    researches.add(LASER_TECHNOLOGY, getResearch(LASER_TECHNOLOGY))
+    researches.add(ION_TECHNOLOGY, getResearch(ION_TECHNOLOGY))
+    researches.add(HYPERSPACE_TECHNOLOGY, getResearch(HYPERSPACE_TECHNOLOGY))
+    researches.add(PLASMA_TECHNOLOGY, getResearch(PLASMA_TECHNOLOGY))
+    researches.add(ESPIONAGE_TECHNOLOGY, getResearch(ESPIONAGE_TECHNOLOGY))
+    researches.add(COMPUTER_TECHNOLOGY, getResearch(COMPUTER_TECHNOLOGY))
+    researches.add(ASTROPHYSICS, getResearch(ASTROPHYSICS))
+    researches.add(INTERGALACTIC_RESEARCH_NETWORK, getResearch(INTERGALACTIC_RESEARCH_NETWORK))
+    researches.add(GRAVITON_TECHNOLOGY, getResearch(GRAVITON_TECHNOLOGY))
+    researches.add(COMBUSTION_DRIVE, getResearch(COMBUSTION_DRIVE))
+    researches.add(IMPULSE_DRIVE, getResearch(IMPULSE_DRIVE))
+    researches.add(HYPERSPACE_DRIVE, getResearch(HYPERSPACE_DRIVE))
+    researches.add(WEAPONS_TECHNOLOGY, getResearch(WEAPONS_TECHNOLOGY))
+    researches.add(SHIELDING_TECHNOLOGY, getResearch(SHIELDING_TECHNOLOGY))
+    researches.add(ARMOUR_TECHNOLOGY, getResearch(ARMOUR_TECHNOLOGY))
 
     this.researches = new Some(new Researches(researches, new Date()))
     this.saveToLocalStorage()
@@ -2123,10 +2200,10 @@ class Settings extends Storable {
 class Player {
   readonly id: number
   readonly name: string
-  readonly planets: Array<number>
+  readonly planets: Set<number>
   readonly researches: Optional<Researches>
 
-  constructor(id: number, name: string, planets: Array<number> = [], researches: Optional<Researches> = None.instance) {
+  constructor(id: number, name: string, planets: Set<number> = new Set<number>(), researches: Optional<Researches> = None.instance) {
     this.id = id;
     this.name = name;
     this.planets = planets;
@@ -2162,7 +2239,7 @@ class Player {
           const json = jsonObject as {
             id: number,
             name: string,
-            planets: Array<number>,
+            planets: Set<number>,
             researches: string,
           }
 
@@ -2177,7 +2254,7 @@ class Player {
   }
 }
 
-class CelestialBody {
+class CelestialBody implements HashCodeAndEquals {
   readonly id: number
   readonly coordinates: Coordinates
   readonly buildings: Optional<Buildings>
@@ -2188,6 +2265,14 @@ class CelestialBody {
     this.coordinates = coordinates;
     this.buildings = buildings;
     this.defences = defences;
+  }
+
+  equals(o: this): boolean {
+    return this.id == o.id;
+  }
+
+  hashCode(): number {
+    return this.id;
   }
 }
 
@@ -2256,10 +2341,10 @@ class Moon extends CelestialBody {
   }
 }
 
-class Planet extends CelestialBody {
+class Planet extends CelestialBody implements HashCodeAndEquals {
   readonly moonId: Optional<number>
 
-  constructor(id: number, coordinates: Coordinates, buildings: Optional<Buildings>, defences: Optional<Defences>, moonId: Optional<number> = None.instance) {
+  constructor(id: number, coordinates: Coordinates, buildings: Optional<Buildings> = None.instance, defences: Optional<Defences> = None.instance, moonId: Optional<number> = None.instance) {
     super(id, coordinates, buildings, defences);
     this.moonId = moonId;
   }
@@ -2324,20 +2409,21 @@ class Planet extends CelestialBody {
 class Universe extends Storable {
   playersAPIDate: Optional<Date>
   universeAPIDate: Optional<Date>
-  readonly players: HashMap<string, Player>
-  readonly planets: HashMap<Coordinates, Planet>
-  readonly moons: HashMap<Coordinates, Moon>
+  private readonly players: HashMap<number, Player>
+  private readonly planets: HashMap<number, Planet>
+  private readonly moons: HashMap<number, Moon>
 
-  private readonly playersById: HashMap<number, Player>
-  private readonly planetsById: HashMap<number, Planet>
-  private readonly moonsById: HashMap<number, Moon>
+  //Helper maps for easier access
+  private readonly playersByName: HashMap<string, Player> = ImmutableHashMap.applyWithHashCodeAndEquals(stringHashcode, instanceEquals)
+  private readonly planetsByCoordinates: HashMap<Coordinates, Planet> = ImmutableHashMap.apply()
+  private readonly moonsByCoordinates: HashMap<Coordinates, Moon> = ImmutableHashMap.apply()
 
   private constructor(
     playersAPIDate: Optional<Date> = None.instance,
     universeAPIDate: Optional<Date> = None.instance,
-    players: HashMap<string, Player> = HashMap.applyWithHashCodeAndEquals(stringHashcode, instanceEquals),
-    planets: HashMap<Coordinates, Planet> = HashMap.apply(),
-    moons: HashMap<Coordinates, Moon> = HashMap.apply(),
+    players: HashMap<number, Player> = ImmutableHashMap.applyWithHashCodeAndEquals(identity, instanceEquals),
+    planets: HashMap<number, Planet> = ImmutableHashMap.applyWithHashCodeAndEquals(identity, instanceEquals),
+    moons: HashMap<number, Moon> = ImmutableHashMap.applyWithHashCodeAndEquals(identity, instanceEquals),
   ) {
     super();
     this.playersAPIDate = playersAPIDate;
@@ -2346,196 +2432,227 @@ class Universe extends Storable {
     this.planets = planets;
     this.moons = moons;
 
-    this.playersById = players.values.reduce((acc, player) => {
-      acc.set(player.id, player)
-      return acc
-    }, HashMap.applyWithHashCodeAndEquals<number, Player>(identity, instanceEquals))
+    players.values.forEach(player => {
+      this.playersByName.add(player.name, player)
+    })
 
-    this.planetsById = planets.values.reduce((acc, planet) => {
-      acc.set(planet.id, planet)
-      return acc
-    }, HashMap.applyWithHashCodeAndEquals<number, Planet>(identity, instanceEquals))
+    planets.values.forEach(planet => {
+      this.planetsByCoordinates.add(planet.coordinates, planet)
+    })
 
-    this.moonsById = moons.values.reduce((acc, moon) => {
-      acc.set(moon.id, moon)
-      return acc
-    }, HashMap.applyWithHashCodeAndEquals<number, Moon>(identity, instanceEquals))
+    moons.values.forEach(moon => {
+      this.moonsByCoordinates.add(moon.coordinates, moon)
+    })
   }
 
   addPlayer(player: Player) {
-    this.players.set(player.name, player)
-    this.playersById.set(player.id, player)
+    this.players.add(player.id, player)
+    this.playersByName.add(player.name, player)
+    return player
   }
 
   addPlanet(planet: Planet) {
-    this.planets.set(planet.coordinates, planet)
-    this.planetsById.set(planet.id, planet)
+    this.planets.add(planet.id, planet)
+    this.planetsByCoordinates.add(planet.coordinates, planet)
+    return planet
   }
 
   addMoon(moon: Moon) {
-    this.moons.set(moon.coordinates, moon)
-    this.moonsById.set(moon.id, moon)
+    this.moons.add(moon.id, moon)
+    this.moonsByCoordinates.add(moon.coordinates, moon)
+    return moon
+  }
+
+  /**
+   * Updates a planet assuming IDs do not change
+   */
+  private updatePlayerWithSameID(player: Player) {
+    const oldPlayer = this.players.get(player.id).getOrThrow(`Could not find player with id ${player.id}`)
+    this.players.delete(oldPlayer.id)
+    this.playersByName.delete(oldPlayer.name)
+    return this.addPlayer(player)
+  }
+
+  /**
+   * Updates a planet assuming IDs do not change
+   */
+  private updatePlanetWithSameID(planet: Planet) {
+    const oldPlayer = this.planets.get(planet.id).getOrThrow(`Could not find planet with id ${planet.id}`)
+    this.planets.delete(oldPlayer.id)
+    this.planetsByCoordinates.delete(oldPlayer.coordinates)
+    return this.addPlanet(planet)
+  }
+
+  /**
+   * Updates a moon assuming IDs do not change
+   */
+  private updateMoonWithSameID(moon: Moon) {
+    const oldMoon = this.moons.get(moon.id).getOrThrow(`Could not find moon with id ${moon.id}`)
+    this.moons.delete(oldMoon.id)
+    this.moonsByCoordinates.delete(oldMoon.coordinates)
+    return this.addMoon(moon)
   }
 
   findPlayerByID(id: number): Optional<Player> {
-    return this.playersById.get(id)
+    return this.players.get(id)
     //return Optional.apply(Array.from(this.players.values).find(player => player.id === id))
   }
 
   findPlanetByID(id: number): Optional<Planet> {
-    return this.planetsById.get(id)
+    return this.planets.get(id)
     //return Optional.apply(this.planets.values.find(planet => planet.id === id))
   }
 
-  addPlanetToPlayer(planet: Planet, playerID: number): void {
-    this.findPlayerByID(playerID)
-      .filter(player => player.planets.every(existingPlanet => existingPlanet !== planet.id)) //Check if player already has this planet
-      .map(player => {
-        this.addPlayer(player.copy({
-          planets: player.planets.concat(planet.id),
-        }))
-      })
-  }
-
   findMoonByID(id: number): Optional<Moon> {
-    return this.moonsById.get(id)
+    return this.moons.get(id)
     //return Optional.apply(Array.from(this.moons.values).find(moon => moon.id === id))
   }
 
-  updatePlayerWithId(id: number, name: string): Player {
-    const player = this.players.get(name)
-      .fold(new Player(id, name, [], None.instance), player => player.copy({
-        name: name,
-      }))
-    this.addPlayer(player)
-    return player
+  /**
+   * Updates the player name if it differs from the given name
+   */
+  private updatePlayerName(player: Player, name: string): Player {
+    if (player.name != name) {
+      return this.updatePlayerWithSameID(player.copy({name: name}))
+    } else {
+      return player
+    }
+  }
+
+  private addPlayerIfNotExists(id: number, name: string): Player {
+    return this.players.getOrElse(id, () => this.addPlayer(new Player(id, name, new Set<number>(), None.instance))
+    )
+  }
+
+  addPlayerOrUpdateName(id: number, name: string): Player {
+    const player = this.addPlayerIfNotExists(id, name)
+    return this.updatePlayerName(player, name)
+  }
+
+  addPlanetToPlayer(playerID: number, planet: Planet): void {
+    this.findPlayerByID(playerID)
+      .map(player => {
+        this.updatePlayerWithSameID(player.copy({
+          planets: player.planets.add(planet.id),
+        }))
+      })
   }
 
   /**
    * Moves a moon to the given coordinates.
    */
-  moveMoon(moon: Moon, targetCoordinates: Coordinates): Moon {
-    this.moons.delete(moon.coordinates);
-    this.addMoon(moon);
-    return moon;
+  private moveMoon(moon: Moon, targetCoordinates: Coordinates): Moon {
+    return this.updateMoonWithSameID(moon.copy({coordinates: targetCoordinates}))
   }
 
   /**
    * Moves a planet and its moon to the given coordinates.
    */
-  movePlanet(planet: Planet, targetCoordinates: Coordinates): Planet {
-    this.planets.delete(planet.coordinates);
-    this.planets.set(targetCoordinates, planet)
-    planet.moonId.map(moonId => {
+  private movePlanet(planet: Planet, targetCoordinates: Coordinates): Planet {
+    const updatedPlanet = planet.copy({coordinates: targetCoordinates})
+    updatedPlanet.moonId.map(moonId => {
       const moonById = this.findMoonByID(moonId).getOrThrow(`Unable to find moon with ID: ${moonId}`)
       this.moveMoon(moonById, targetCoordinates)
     })
-    return planet
+    return this.updatePlanetWithSameID(updatedPlanet)
+  }
+
+
+  private addPlanetIfNotExists(id: number, coordinates: Coordinates, moon: Optional<Moon>): Planet {
+    return this.planets.getOrElse(id, () => this.addPlanet(new Planet(id, coordinates, None.instance, None.instance, moon.map(moon => moon.id))))
   }
 
   updatePlanetWithId(id: number, coordinates: Coordinates, moon: Optional<Moon>): Planet {
-    const planetByID = this.findPlanetByID(id);
-    const planetByCoordinates = this.planets.get(coordinates)
-    const planet = planetByID.fold(
-      planetByCoordinates.fold(
-        new Planet(id, coordinates, None.instance, None.instance),
-        planetByCoordinates => planetByCoordinates.copy({id: id}),
-      ),
-      planet => {
-        if (moon.nonEmpty) {
-          planet = planet.copy({
-            moonId: moon.map(moon => moon.id),
-          })
-        }
-        if (planetByCoordinates.isEmpty) {
-          //Planet moved
-          planet = this.movePlanet(planet, coordinates)
-        }
-        return planet
-      })
-    this.addPlanet(planet)
+    let planet = this.addPlanetIfNotExists(id, coordinates, moon)
+    if (planet.coordinates != coordinates) {
+      planet = this.movePlanet(planet, coordinates)
+    }
+    if (planet.moonId.isEmpty) {
+      planet = this.updatePlanetWithSameID(planet.copy({
+        moonId: moon.map(moon => moon.id),
+      }))
+    }
     return planet
   }
 
-  updateMoonWithId(id: number, coordinates: Coordinates, size: Optional<number> = None.instance): Moon {
-    const moon = this.findMoonByID(id)
-      .fold(new Moon(id, coordinates, None.instance, None.instance, size), moon => {
-        return moon.copy({
-          coordinates: coordinates,
-          size: moon.size.orElse(size),
-        })
-      })
-    this.addMoon(moon)
-    return moon
+  private addMoonIfNotExists(id: number, coordinates: Coordinates, size: Optional<number> = None.instance): Moon {
+    return this.moons.getOrElse(id, () => this.addMoon(new Moon(id, coordinates, None.instance, None.instance, size)))
   }
 
-  updateMoon(planet: JQuery, coordinates: Coordinates): Optional<Moon> {
+  //sdads
+
+  setNewCoordinatesForMoon(id: number, coordinates: Coordinates, size: Optional<number> = None.instance): Moon {
+    const moon = this.addMoonIfNotExists(id, coordinates, size)
+    return this.updateMoonWithSameID(moon.copy({
+      coordinates: coordinates,
+      size: moon.size.orElse(size),
+    }))
+  }
+
+  updateMoon(planet: HTMLElement, coordinates: Coordinates): Optional<Moon> {
     return Optional.apply(planet.children[0])
       .map(moon => {
         const id = Optional.parseInt(moon.id).get
         const size = Optional.apply($(moon).attr("size")).map(parseInt)
-        return this.updateMoonWithId(id, coordinates, size)
+        return this.setNewCoordinatesForMoon(id, coordinates, size)
       })
   }
 
-  private updatePlanetsAndMoons(): Promise<null> {
+  private async updatePlanetsAndMoons(): Promise<void> {
     if (this.universeAPIDate.forall(date => daysSince(date) > 7)) {
       console.log("Updating universe")
-      const link = `https://${UNIVERSE}/api/universe.xml`
-      return Promise.resolve($.get(link, result => {
-        const universe = $(result).find("universe")
-        universe.find("planet").toArray().forEach((planet, index) => {
-          const planet$: JQuery = $(planet)
-          const coordinates = Optional.apply(planet$.attr("coords"))
-            .flatMap(Coordinates.fromText)
-            .getOrThrow("Could not get coordinates in updatePlanetsAndMoons!")
-          const moon = this.updateMoon(planet, coordinates)
-          const id = Optional.parseInt(planet.id).get
-          //console.log(`Updating planet ${id} at ${coordinates.print()}`)
-          const updatedPlanet = this.updatePlanetWithId(id, coordinates, moon)
-          const playerID = Optional.apply(planet$.attr("player")).map(parseInt)
-            .getOrThrow("Could not get player ID in updatePlanetsAndMoons!")
-          this.addPlanetToPlayer(updatedPlanet, playerID)
-        })
-        this.universeAPIDate = Optional.apply(universe.attr("timestamp"))
-          .flatMap(Optional.parseInt)
-          .map(timestamp => new Date(timestamp * 1000))
-      }))
+      const result = await get(`https://${UNIVERSE}/api/universe.xml`)
+      const universe = result.find("universe")
+      universe.find("planet").toArray().forEach((planet, index) => {
+        const planet$: JQuery = $(planet)
+        const coordinates = Optional.apply(planet$.attr("coords"))
+          .flatMap(Coordinates.fromText)
+          .getOrThrow("Could not get coordinates in updatePlanetsAndMoons!")
+        const moon = this.updateMoon(planet, coordinates)
+        const id = Optional.parseInt(planet.id).get
+        //console.log(`Updating planet ${id} at ${coordinates.print()}`)
+        const updatedPlanet = this.updatePlanetWithId(id, coordinates, moon)
+        const playerID = Optional.apply(planet$.attr("player")).map(parseInt)
+          .getOrThrow("Could not get player ID in updatePlanetsAndMoons!")
+        this.addPlanetToPlayer(playerID, updatedPlanet)
+      })
+      this.universeAPIDate = Optional.apply(universe.attr("timestamp"))
+        .flatMap(Optional.parseInt)
+        .map(timestamp => new Date(timestamp * 1000))
     } else {
-      return Promise.resolve(null)
+      return Promise.resolve()
     }
   }
 
-  private updatePlayers(): Promise<null> {
+  private async updatePlayers(): Promise<void> {
     if (this.playersAPIDate.forall(date => daysSince(date) > 1)) {
       console.log("Updating players")
       const link = `https://${UNIVERSE}/api/players.xml`
-      return Promise.resolve($.get(link, result => {
-        const players = $(result).find("players")
-        players.find("player").toArray().map((player, index) => {
-          const id = Optional.parseInt(player.id).get
-          const name = Optional.apply($(player).attr("name")).getOrThrow("Could not get player name in updatePlayers")
-          this.updatePlayerWithId(id, name)
-        });
-        this.playersAPIDate = Optional.apply(players.attr("timestamp"))
-          .flatMap(Optional.parseInt)
-          .map(timestamp => new Date(timestamp * 1000))
-        console.log("Players update finished")
-      }))
+
+      const result = await get(link)
+      const players = result.find("players")
+      players.find("player").toArray().map(player => {
+        const id = Optional.parseInt(player.id).get
+        const name = Optional.apply($(player).attr("name")).getOrThrow("Could not get player name in updatePlayers")
+        this.addPlayerOrUpdateName(id, name)
+      })
+      this.playersAPIDate = Optional.apply(players.attr("timestamp"))
+        .flatMap(Optional.parseInt)
+        .map(timestamp => new Date(timestamp * 1000))
+      console.log("Players update finished")
     } else {
-      return Promise.resolve(null)
+      return Promise.resolve()
     }
   }
 
-  updateEverything(): Promise<void> {
-    const updatePlayers = this.updatePlayers()
-    const updatePlanetsAndMoons = this.updatePlanetsAndMoons()
-    //const updatePlanetsAndMoons = Promise.resolve(1)
-    return Promise.all([updatePlayers, updatePlanetsAndMoons]).then(() => this.saveToLocalStorage())
+  async updateEverything(): Promise<void> {
+    await this.updatePlayers()
+    await this.updatePlanetsAndMoons()
+    this.saveToLocalStorage()
   }
 
   updatePlanetAt(coordinates: Coordinates, buildings: Optional<Buildings>, defences: Optional<Defences>): Optional<Planet> {
-    return this.planets.get(coordinates).map(planet => {
+    return this.planetsByCoordinates.get(coordinates).map(planet => {
       const updatedBuildings = Section.getMostUpToDate(planet.buildings, buildings)
       const updatedDefences = Section.getMostUpToDate(planet.defences, defences)
       const updatedPlanet = planet.copy({
@@ -2548,7 +2665,7 @@ class Universe extends Storable {
   }
 
   updateMoonAt(coordinates: Coordinates, buildings: Optional<Buildings>, defences: Optional<Defences>): Optional<Moon> {
-    return this.moons.get(coordinates).map(moon => {
+    return this.moonsByCoordinates.get(coordinates).map(moon => {
       const updatedBuildings = Section.getMostUpToDate(moon.buildings, buildings)
       const updatedDefences = Section.getMostUpToDate(moon.defences, defences)
       const updatedMoon = moon.copy({
@@ -2560,13 +2677,13 @@ class Universe extends Storable {
     })
   }
 
-  updatePlayerNamed(name: string, researches: Optional<Researches>): Optional<Player> {
-    return this.players.get(name).map(player => {
+  updatePlayerResearchesByName(name: string, researches: Optional<Researches>): Optional<Player> {
+    return this.playersByName.get(name).map(player => {
       const updatedResearches = Section.getMostUpToDate(player.researches, researches)
       const updatedPlayer = player.copy({
         researches: updatedResearches,
       })
-      this.addPlayer(updatedPlayer)
+      this.updatePlayerWithSameID(updatedPlayer)
       return updatedPlayer
     })
   }
@@ -2575,20 +2692,20 @@ class Universe extends Storable {
     return `${SAVE_NAME_PREFIX}_universe`;
   }
 
-  private static playersCodec(playerCodec: Codec<Player> = Player.codec()): Codec<HashMap<string, Player>> {
-    class PlayersCodec implements Codec<HashMap<string, Player>> {
+  private static playersCodec(playerCodec: Codec<Player> = Player.codec()): Codec<HashMap<number, Player>> {
+    class PlayersCodec implements Codec<HashMap<number, Player>> {
       get playerArrayCodec(): Codec<Array<Player>> {
         return new ArrayCodec(playerCodec)
       }
 
-      encode(a: HashMap<string, Player>): Object {
+      encode(a: HashMap<number, Player>): Object {
         return this.playerArrayCodec.encode(a.values)
       }
 
-      decode(json: Object): Result<HashMap<string, Player>> {
+      decode(json: Object): Result<HashMap<number, Player>> {
         return this.playerArrayCodec.decode(json).map(players => {
-          const map = HashMap.applyWithHashCodeAndEquals<string, Player>(stringHashcode, instanceEquals)
-          players.forEach(player => map.set(player.name, player))
+          const map = ImmutableHashMap.applyWithHashCodeAndEquals<number, Player>(identity, instanceEquals)
+          players.forEach(player => map.add(player.id, player))
           return map
         })
       }
@@ -2597,20 +2714,20 @@ class Universe extends Storable {
     return new PlayersCodec()
   }
 
-  private static planetsCodec(planetsCodec: Codec<Planet> = Planet.codec()): Codec<HashMap<Coordinates, Planet>> {
-    class PlanetsCodec implements Codec<HashMap<Coordinates, Planet>> {
+  private static planetsCodec(planetsCodec: Codec<Planet> = Planet.codec()): Codec<HashMap<number, Planet>> {
+    class PlanetsCodec implements Codec<HashMap<number, Planet>> {
       get planetsArrayCodec(): Codec<Array<Planet>> {
         return new ArrayCodec(planetsCodec)
       }
 
-      encode(a: HashMap<Coordinates, Planet>): Object {
+      encode(a: HashMap<number, Planet>): Object {
         return this.planetsArrayCodec.encode(a.values)
       }
 
-      decode(json: Object): Result<HashMap<Coordinates, Planet>> {
+      decode(json: Object): Result<HashMap<number, Planet>> {
         return this.planetsArrayCodec.decode(json).map(planets => {
-          const map = HashMap.apply<Coordinates, Planet>()
-          planets.forEach(planet => map.set(planet.coordinates, planet))
+          const map = ImmutableHashMap.applyWithHashCodeAndEquals<number, Planet>(identity, instanceEquals)
+          planets.forEach(planet => map.add(planet.id, planet))
           return map
         })
       }
@@ -2619,20 +2736,20 @@ class Universe extends Storable {
     return new PlanetsCodec()
   }
 
-  private static moonsCodec(moonsCodec: Codec<Moon> = Moon.codec()): Codec<HashMap<Coordinates, Moon>> {
-    class MoonsCodec implements Codec<HashMap<Coordinates, Moon>> {
+  private static moonsCodec(moonsCodec: Codec<Moon> = Moon.codec()): Codec<HashMap<number, Moon>> {
+    class MoonsCodec implements Codec<HashMap<number, Moon>> {
       get moonsArrayCodec(): Codec<Array<Moon>> {
         return new ArrayCodec(moonsCodec)
       }
 
-      encode(a: HashMap<Coordinates, Moon>): Object {
+      encode(a: HashMap<number, Moon>): Object {
         return this.moonsArrayCodec.encode(a.values)
       }
 
-      decode(json: Object): Result<HashMap<Coordinates, Moon>> {
+      decode(json: Object): Result<HashMap<number, Moon>> {
         return this.moonsArrayCodec.decode(json).map(moons => {
-          const map = HashMap.apply<Coordinates, Moon>()
-          moons.forEach(moon => map.set(moon.coordinates, moon))
+          const map = ImmutableHashMap.applyWithHashCodeAndEquals<number, Moon>(identity, instanceEquals)
+          moons.forEach(moon => map.add(moon.id, moon))
           return map
         })
       }
@@ -2642,9 +2759,9 @@ class Universe extends Storable {
   }
 
   static codec(
-    playerCodec: Codec<HashMap<string, Player>> = Universe.playersCodec(),
-    planetsCodec: Codec<HashMap<Coordinates, Planet>> = Universe.planetsCodec(),
-    moonsCodec: Codec<HashMap<Coordinates, Moon>> = Universe.moonsCodec(),
+    playerCodec: Codec<HashMap<number, Player>> = Universe.playersCodec(),
+    planetsCodec: Codec<HashMap<number, Planet>> = Universe.planetsCodec(),
+    moonsCodec: Codec<HashMap<number, Moon>> = Universe.moonsCodec(),
   ): Codec<Universe> {
     const optionalDateCodec = Optional.codec<Date>(Codecs.date)
 
@@ -2699,30 +2816,27 @@ class Universe extends Storable {
 class ParsedReportsRepository extends Storable {
   readonly allReports: HashMap<number, ParsedReport>
 
-  private constructor(allDetails: HashMap<number, ParsedReport> = HashMap.applyWithHashCodeAndEquals(identity, instanceEquals)) {
+  private constructor(allDetails: HashMap<number, ParsedReport> = ImmutableHashMap.applyWithHashCodeAndEquals(identity, instanceEquals)) {
     super();
     this.allReports = allDetails
   }
 
   add(report: ParsedReport): void {
-    this.allReports.set(report.id, report)
+    this.allReports.add(report.id, report)
     this.saveToLocalStorage()
   }
 
   async get(message: Message): Promise<ParsedReport> {
-    function getReport(message: Message): Promise<ParsedReport> {
+    async function getReport(message: Message): Promise<ParsedReport> {
       //console.log(`Getting details for ${message.id}`)
-      return new Promise<ParsedReport>(resolve => {
-        $.get("index.php?page=messages", {ajax: 1, messageId: message.id}, (detailedReport) => {
-          const plunderRatio = 0.5
-          const parsedReport = ParsedReport.fromDetailedReport(message, $(detailedReport), plunderRatio)
-          spyHelper.parsedReportsRepository.add(parsedReport);
-          resolve(parsedReport)
-        })
-      })
+
+      const detailedReport = await getWithData("index.php?page=messages", {ajax: 1, messageId: message.id})
+      const parsedReport = ParsedReport.fromDetailedReport(message, detailedReport, 0.5)
+      spyHelper.parsedReportsRepository.add(parsedReport)
+      return parsedReport
     }
 
-    return this.allReports.getOrElse(message.id, await getReport(message))
+    return this.allReports.get(message.id).cata<Promise<ParsedReport>>(async () => await getReport(message), Promise.resolve)
   }
 
   remove(id) {
@@ -2748,8 +2862,8 @@ class ParsedReportsRepository extends Storable {
 
       decode(json: Object): Result<ParsedReportsRepository> {
         return this.parsedReportArrayCodec.decode(json).map(reports => {
-          const map = HashMap.applyWithHashCodeAndEquals<number, ParsedReport>(identity, instanceEquals)
-          reports.forEach(report => map.set(report.id, report))
+          const map = ImmutableHashMap.applyWithHashCodeAndEquals<number, ParsedReport>(identity, instanceEquals)
+          reports.forEach(report => map.add(report.id, report))
           return map
         }).map(allReports => new ParsedReportsRepository(allReports))
       }
@@ -2774,45 +2888,39 @@ class GalaxyParser {
     this.universe = universe;
   }
 
-  private findPlayerName(id: number): Promise<string> {
-    const link = `https://${UNIVERSE}/api/playerData.xml?id=${id}`
-    return Promise.resolve($.get(link, result => {
-      return Optional.apply($(result).find("playerData").attr("name"))
-        .getOrThrow(`Failed to find name of player with ID: ${id}`)
-    }))
+  private static async findPlayerName(id: number): Promise<string> {
+    const result = await get(`https://${UNIVERSE}/api/playerData.xml?id=${id}`)
+    return Optional.apply(result.find("playerData").attr("name")).toPromise(`Failed to find name of player with ID: ${id}`)
   }
 
-  private parse(): Promise<void> {
+  private async parse(): Promise<void> {
     console.log("Parsing Galaxy")
-    return $(".row").toArray().map(row => {
+    await Promise.all($(".row").toArray().map(row => {
       const row$ = $(row);
       return Optional.apply(row$.find(".colonized").get(0))
-        .map(colonized => {
+        .flatMap(colonized => {
           const planetID = Optional.apply($(colonized).attr("data-planet-id")).flatMap(Optional.parseInt)
           const coordinates = Optional.apply(row$.find(".position").attr("data-coords")).flatMap(Coordinates.fromText)
           const moonID = Optional.apply($(row$.find(".moon").get(0)).attr("data-moon-id")).flatMap(Optional.parseInt)
-          return planetID.flatMap(planetID => {
-            return coordinates.flatMap(coordinates => {
-              const moon = moonID.map(moonID => this.universe.updateMoonWithId(moonID, coordinates))
+          return planetID.flatMap(planetID =>
+            coordinates.flatMap(coordinates => {
+              const moon = moonID.map(moonID => this.universe.setNewCoordinatesForMoon(moonID, coordinates))
               const planet = this.universe.updatePlanetWithId(planetID, coordinates, moon)
 
-              const playerID = Optional.apply(row$.find(".playername").find("[data-playerid]").attr("data-playerid"))
+              return Optional.apply(row$.find(".playername").find("[data-playerid]").attr("data-playerid"))
                 .flatMap(Optional.parseInt)
-              return playerID.map(playerID => {
-                const playerName: Promise<string> = this.universe.findPlayerByID(playerID).cata(() => this.findPlayerName(playerID), player => Promise.resolve(player.name))
-                return playerName.then(playerName => {
-                  this.universe.updatePlayerWithId(playerID, playerName)
-                  this.universe.addPlanetToPlayer(planet, playerID)
+                .map(async playerID => {
+
+
+                  const playerName = await this.universe.findPlayerByID(playerID).cata(() => GalaxyParser.findPlayerName(playerID), player => Promise.resolve(player.name))
+                  this.universe.addPlayerOrUpdateName(playerID, playerName)
+                  this.universe.addPlanetToPlayer(playerID, planet)
                 })
-              })
             })
-          })
-            .fold(Promise.resolve(), p => p.then(() => {
-            }))
+          )
         })
-        .fold(Promise.resolve(), identity)
-    })
-      .reduce((acc, promise) => acc.then(() => promise), Promise.resolve())
+        .getOrElse(() => Promise.resolve())
+    }))
   }
 
   observe() {
@@ -2905,6 +3013,10 @@ class MessagesParser {
       })
   }
 
+  private static async handleParsedReport(parsedReport: ParsedReport, report: JQuery): Promise<void> {
+
+  }
+
   private static async handleMessage(msgID: number, report: JQuery): Promise<void> {
     const coordinates = await CoordinatesWithType.fromReport(report)
       .toPromise(`Failed to get coordinates from report with ID: ${msgID}!`)
@@ -2922,9 +3034,10 @@ class MessagesParser {
 
     spyHelper.messages.push(message)
     const parsedReport = await spyHelper.parsedReportsRepository.get(message)
+    console.log(parsedReport)
   }
 
-  private static handleAllMessages(): Promise<void> {
+  private static async handleAllMessages(): Promise<void> {
     const reports = $(".msg:visible").toArray().reduce((acc, report) => {
       const jReport: JQuery = $(report)
       const msgId: number = jReport.data("msg-id");
@@ -2932,35 +3045,26 @@ class MessagesParser {
       acc.push(MessagesParser.handleMessage(msgId, jReport));
       return acc;
     }, new Array<Promise<void>>())
-
-    return Promise.all(reports).then(_ => {
-    })
+    await Promise.all(reports)
   }
 
-  run(): Promise<void> {
-    return this.innerTarget
-      .map(target => $(target).find(".tab_inner"))
-      .flatMap(innerTab => {
-        function appendMessages(c: Element) {
-          const content = $(c).find(".msg");
-          innerTab.append(content); //Append all messages from this page to the message page.
-        }
-
-        return this.extractPageNumber(innerTab).map(numberOfPages => {
+  async run(): Promise<void> {
+    await this.innerTarget.map(target => $(target).find(".tab_inner"))
+      .flatMap(innerTab =>
+        this.extractPageNumber(innerTab).map(numberOfPages => {
           let requests = new Array<Promise<void>>()
           for (let i = 2; i <= numberOfPages; i++) { //Skip page 1 as we already have it.
-            const pageRequest = MessagesParser.getPage(i, appendMessages)
+            const pageRequest = MessagesParser.getPage(i, element => innerTab.append($(element).find(".msg")))
             requests.push(pageRequest)
           }
           return Promise.all(requests)
         })
-      })
-      .getOrThrow("Failed to append messages")
-      .then(MessagesParser.handleAllMessages)
-      .then(() => {
-        $(".pagination").remove() //Remove the page changer as we have all pages loaded already.
-        console.log("All done")
-      })
+      )
+      .toPromise("Failed to append messages")
+      .then(identity)
+    await MessagesParser.handleAllMessages
+    $(".pagination").remove() //Remove the page changer as we have all pages loaded already.
+    console.log("All done")
   }
 }
 
