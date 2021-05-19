@@ -3,8 +3,7 @@
 // @version      2.1.6
 // @description  A script that adds useful information to espionage reports.
 // @author       Amuxix
-// @updateURL    https://web.tecnico.ulisboa.pt/samuel.a.martins/SpyHelper.user.js
-// @downloadURL  https://web.tecnico.ulisboa.pt/samuel.a.martins/SpyHelper.user.js
+// @downloadURL  https://rawcdn.githack.com/Amuxix/SpyHelper/2.1.6/SpyHelper/src/SpyHelper.user.js
 // @grant        none
 // @include      http*.ogame.gameforge.com/game/index.php?page=messages*
 // @include      http*.ogame.gameforge.com/game/index.php?page=ingame&component=fleetdispatch*
@@ -1221,7 +1220,6 @@ class SavedInLocalStorage extends Serializable {
 
     save(What) {
         const value = JSON.stringify(this.toJson());
-        console.log(value)
         try {
             localStorage.setItem(What.saveName, value);
         } catch (e) {
@@ -3164,7 +3162,7 @@ let SpyHelper = {
         let link = document.createElement('link');
         link.setAttribute('rel', 'stylesheet');
         link.setAttribute('type', 'text/css');
-        link.setAttribute('href', 'https://web.tecnico.ulisboa.pt/samuel.a.martins/' + SCRIPT_NAME + '.css');
+        link.setAttribute('href', 'https://rawcdn.githack.com/Amuxix/SpyHelper/2.1.6/SpyHelper/src/' + SCRIPT_NAME + '.css');
         document.head.appendChild(link);
     },
 
